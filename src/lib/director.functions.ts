@@ -66,14 +66,13 @@ Design exactly ${transitionCount} transitions — one for each beat in order. He
 Keep captionHook under 30 chars, captionOutro under 25 chars. Be bold and cinematic, not generic.`;
 
     try {
-      const { experimental_output } = await generateText({
+      const { output } = await generateText({
         model: gateway("google/gemini-3-flash-preview"),
-        experimental_output: Output.object({ schema: EditPlan }),
+        output: Output.object({ schema: EditPlan }),
         prompt,
       });
 
-      // Ensure transitions length matches beat count (pad or trim)
-      const plan = experimental_output;
+      const plan = output as EditPlanT;
       while (plan.transitions.length < transitionCount) {
         plan.transitions.push({ type: "cut", isHero: false, sfx: "none" });
       }
