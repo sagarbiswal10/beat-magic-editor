@@ -21,7 +21,8 @@ const DirectorInput = z.object({
     quietRatio: z.number(),
     peakDensity: z.number(),
     fingerprint: z.string(),
-    beatEnergies: z.array(z.number()).max(128),
+    cutBeatEnergies: z.array(z.number()).max(64),
+    cutBeatTimes: z.array(z.number()).max(64),
   }),
 });
 
@@ -32,9 +33,22 @@ const EditPlan = z.object({
   colorGrade: z.enum(["warm-romantic", "vibrant-party", "cinematic-teal", "golden-hour", "vintage-film"]),
   transitions: z.array(
     z.object({
-      type: z.enum(["zoom-punch", "flash-cut", "cross-dissolve", "glitch", "spin", "blur-fade", "cut"]),
+      type: z.enum([
+        "cut",
+        "cross-dissolve",
+        "blur-fade",
+        "zoom-punch",
+        "flash-white",
+        "flash-black",
+        "push-left",
+        "push-right",
+        "push-up",
+        "morph-zoom",
+        "light-leak",
+        "film-burn",
+        "glitch",
+      ]),
       isHero: z.boolean(),
-      sfx: z.enum(["impact", "riser", "whoosh", "none"]),
     }),
   ),
   motionStyle: z.enum(["ken-burns-slow", "ken-burns-fast", "punch-zoom", "parallax-drift"]),
@@ -52,10 +66,10 @@ export const generateEditPlan = createServerFn({ method: "POST" })
 
     const gateway = createLovableAiGatewayProvider(key);
 
-    const transitionCount = Math.max(2, data.audio.beatCount);
+    const transitionCount = Math.max(1, data.audio.cutBeatEnergies.length);
     const a = data.audio;
     const feel = describeFeel(a);
-    const prompt = `You are a world-class music video editor. Every song has a soul — you FEEL it, then cut to it. No two songs get the same edit.
+    const prompt = `You are a world-class music video editor. Every song has a soul — you FEEL it, then cut to it. No two songs get the same edit. Cuts are RARE and DELIBERATE — never every beat.
 
 SONG FINGERPRINT (unique to THIS section): ${a.fingerprint}
 OCCASION: ${data.occasion} | ASPECT: ${data.aspectRatio} | CLIPS: ${data.mediaCount}
@@ -68,19 +82,23 @@ DEEP SONG ANALYSIS:
 - Quiet ratio: ${(a.quietRatio * 100).toFixed(0)}% of the section is soft
 - Energy curve (32 slices, 0-1): [${a.energyCurve.map((n) => n.toFixed(2)).join(",")}]
 - Brightness curve: [${a.brightnessCurve.map((n) => n.toFixed(2)).join(",")}]
-- Per-beat energies (${a.beatEnergies.length}): [${a.beatEnergies.map((n) => n.toFixed(2)).join(",")}]
-- Hero drops at: [${a.heroBeatTimes.map((n) => n.toFixed(2) + "s").join(", ")}]
+- Selected cut points (${transitionCount}, in order): times [${a.cutBeatTimes.map((n) => n.toFixed(2) + "s").join(", ")}] energies [${a.cutBeatEnergies.map((n) => n.toFixed(2)).join(",")}]
+- Hero drops in this window: [${a.heroBeatTimes.map((n) => n.toFixed(2) + "s").join(", ")}]
 
 SONG FEEL (your read): ${feel}
 
 YOUR JOB — think like a specific editor for THIS song:
 1. Name a real editing style that fits this exact fingerprint (not generic "cinematic cut"). Reference a real aesthetic — Kolder travel drift, Daniels x Turnstile chaos-cut, Emmanuel Lubezki floating dreamscape, K-pop hard-cut, Bollywood wedding montage, A24 handheld, MTV early-2000s, whatever the song demands.
 2. Pick colorGrade + motionStyle that MATCH the brightness and dynamic range (warm/dark songs -> warm-romantic or vintage-film + parallax-drift; bright/punchy -> cinematic-teal or vibrant-party + punch-zoom; ballads -> golden-hour + ken-burns-slow).
-3. Design exactly ${transitionCount} transitions — one per beat, IN ORDER matching the per-beat energies array:
-   - Beat energy > 0.75 or hero drop: "zoom-punch" / "glitch" / "flash-cut" + "impact" or "riser"
-   - Beat energy 0.4-0.75: "spin" / "cross-dissolve" (with motion) / "blur-fade"
-   - Beat energy < 0.4 (quiet): "cross-dissolve" / "cut" / "blur-fade" + "none" or soft "whoosh"
-   - VARY types — never repeat the same transition more than 3 in a row. Reflect the song's shape: intros breathe, verses groove, choruses hit, bridges reset.
+3. Design exactly ${transitionCount} transitions — one per CUT POINT, in order. Available transitions (choose from this set only):
+   - "cut": clean hard cut, invisible pacing (great on quiet moments)
+   - "cross-dissolve", "blur-fade": soft, romantic, ballads
+   - "morph-zoom", "zoom-punch": punchy hits, drops, choruses
+   - "flash-white", "flash-black": big drops, drama, impact
+   - "push-left", "push-right", "push-up": kinetic energy, K-pop, hip-hop
+   - "light-leak", "film-burn": warm nostalgia, weddings, sunsets, film aesthetic
+   - "glitch": chaos, distortion, use SPARINGLY (max once every 6 cuts)
+   Rules: pick transitions matching each cut's energy. Vary types — never repeat the same one more than twice in a row. Ballads use mostly dissolves + cuts. Party songs use pushes + zooms + flashes. Weddings use light-leaks + dissolves + film-burns. Mark isHero: true for the biggest 1-3 cuts (drops).
 4. captionHook (<=30 chars) and captionOutro (<=25 chars) that echo the song's mood + occasion — never a generic "WEDDING" or heart emoji unless the song is that literal.
 
 Make this plan DIFFERENT from what you'd give any other song. Use the fingerprint as commitment: two songs with different fingerprints must get different styleName, colorGrade, motionStyle, and transition patterns.`;
@@ -95,13 +113,13 @@ Make this plan DIFFERENT from what you'd give any other song. Use the fingerprin
 
       const plan = output as EditPlanT;
       while (plan.transitions.length < transitionCount) {
-        plan.transitions.push({ type: "cut", isHero: false, sfx: "none" });
+        plan.transitions.push({ type: "cut", isHero: false });
       }
       plan.transitions = plan.transitions.slice(0, transitionCount);
       return plan;
     } catch (err) {
       if (NoObjectGeneratedError.isInstance(err)) {
-        return fallbackPlan(data.occasion, transitionCount, data.audio.heroBeatTimes, data.audio.energyCurve);
+        return fallbackPlan(data.occasion, transitionCount, data.audio.cutBeatEnergies);
       }
       throw err;
     }
@@ -134,23 +152,25 @@ function describeFeel(a: {
 function fallbackPlan(
   occasion: string,
   count: number,
-  heroTimes: number[],
   energy: number[],
 ): EditPlanT {
+  const isWedding = occasion.toLowerCase().includes("wedding");
+  const softPool = ["cross-dissolve", "blur-fade", "light-leak", "film-burn", "cut"] as const;
+  const punchPool = ["morph-zoom", "zoom-punch", "flash-white", "push-left", "push-right"] as const;
   const transitions: EditPlanT["transitions"] = Array.from({ length: count }, (_, i) => {
-    const e = energy[Math.floor((i / count) * energy.length)] ?? 0.5;
-    const isHero = i > 0 && i % 4 === 0;
-    if (isHero || e > 0.7) {
-      return { type: "zoom-punch" as const, isHero: true, sfx: "impact" as const };
+    const e = energy[i] ?? 0.5;
+    const isHero = e > 0.85;
+    if (e > 0.6) {
+      const pool = isWedding ? [...punchPool, "light-leak" as const] : punchPool;
+      return { type: pool[i % pool.length], isHero };
     }
-    if (e > 0.5) return { type: "spin" as const, isHero: false, sfx: "whoosh" as const };
-    return { type: "cross-dissolve" as const, isHero: false, sfx: "none" as const };
+    return { type: softPool[i % softPool.length], isHero: false };
   });
   return {
     styleName: `${occasion} Cinematic Cut`,
-    styleReference: "Fast-paced cinematic reel with beat-synced transitions",
-    pacingNote: "Build energy toward drops, breathe on softer moments",
-    colorGrade: occasion.toLowerCase().includes("wedding") ? "warm-romantic" : "vibrant-party",
+    styleReference: "Beat-synced reel with breathing pacing — cuts only on hero moments.",
+    pacingNote: "Sparse cuts. Big drops get pushes and flashes. Quiet parts get dissolves.",
+    colorGrade: isWedding ? "warm-romantic" : "vibrant-party",
     transitions,
     motionStyle: "ken-burns-fast",
     captionHook: occasion.toUpperCase(),
