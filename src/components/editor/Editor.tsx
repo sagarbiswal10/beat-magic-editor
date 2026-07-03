@@ -544,24 +544,11 @@ export function Editor() {
               <p className="mt-1 text-sm">
                 <span className="font-semibold text-primary">Pacing:</span> {plan.pacingNote}
               </p>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {plan.transitions.slice(0, 20).map((t, i) => (
-                  <span
-                    key={i}
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-mono ${
-                      t.isHero
-                        ? "bg-accent/20 text-accent"
-                        : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    {t.type}
-                    {t.sfx !== "none" && <span className="ml-1 opacity-60">+{t.sfx}</span>}
-                  </span>
-                ))}
-                {plan.transitions.length > 20 && (
-                  <span className="text-[10px] text-muted-foreground">+{plan.transitions.length - 20} more</span>
-                )}
-              </div>
+              <TransitionEditor
+                plan={plan}
+                beats={renderCfg?.beats ?? []}
+                onChange={(next) => setPlan(next)}
+              />
             </div>
           )}
         </section>
