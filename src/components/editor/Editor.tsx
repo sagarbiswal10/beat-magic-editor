@@ -768,3 +768,83 @@ function Stat({ label, value }: { label: string; value: string | number }) {
     </div>
   );
 }
+
+const TRANSITION_TYPES = [
+  "cut",
+  "cross-dissolve",
+  "blur-fade",
+  "zoom-punch",
+  "flash-cut",
+  "glitch",
+  "spin",
+] as const;
+const SFX_TYPES = ["none", "whoosh", "impact", "riser"] as const;
+
+function TransitionEditor({
+  plan,
+  beats,
+  onChange,
+}: {
+  plan: EditPlanT;
+  beats: number[];
+  onChange: (next: EditPlanT) => void;
+}) {
+  const update = (i: number, patch: Partial<EditPlanT["transitions"][number]>) => {
+    const next: EditPlanT = {
+      ...plan,
+      transitions: plan.transitions.map((t, idx) => (idx === i ? { ...t, ...patch } : t)),
+    };
+    onChange(next);
+  };
+  return (
+    <div className="mt-2 max-h-72 overflow-y-auto rounded-md border border-border/60 bg-background/40">
+      <div className="sticky top-0 grid grid-cols-[40px_60px_1fr_1fr_40px] items-center gap-2 border-b border-border/60 bg-card/80 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground backdrop-blur">
+        <span>#</span>
+        <span>Beat</span>
+        <span>Transition</span>
+        <span>SFX</span>
+        <span className="text-center">Hero</span>
+      </div>
+      {plan.transitions.map((t, i) => (
+        <div
+          key={i}
+          className="grid grid-cols-[40px_60px_1fr_1fr_40px] items-center gap-2 border-b border-border/40 px-2 py-1.5 text-xs last:border-b-0 hover:bg-secondary/30"
+        >
+          <span className="font-mono text-muted-foreground">{i + 1}</span>
+          <span className="font-mono text-[10px] text-muted-foreground">
+            {beats[i] != null ? `${beats[i].toFixed(2)}s` : "—"}
+          </span>
+          <select
+            value={t.type}
+            onChange={(e) => update(i, { type: e.target.value as EditPlanT["transitions"][number]["type"] })}
+            className={`rounded border border-border bg-secondary px-1.5 py-1 text-[11px] outline-none focus:border-primary ${
+              t.isHero ? "text-accent" : "text-foreground"
+            }`}
+          >
+            {TRANSITION_TYPES.map((tt) => (
+              <option key={tt} value={tt}>{tt}</option>
+            ))}
+          </select>
+          <select
+            value={t.sfx}
+            onChange={(e) => update(i, { sfx: e.target.value as EditPlanT["transitions"][number]["sfx"] })}
+            className="rounded border border-border bg-secondary px-1.5 py-1 text-[11px] outline-none focus:border-primary"
+          >
+            {SFX_TYPES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => update(i, { isHero: !t.isHero })}
+            className={`mx-auto flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition ${
+              t.isHero ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground hover:bg-accent/40"
+            }`}
+            title="Toggle hero beat (adds flash pulse)"
+          >
+            ★
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
