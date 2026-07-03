@@ -7,6 +7,12 @@ export interface BeatAnalysis {
   beats: number[]; // seconds, absolute in the buffer
   heroBeats: number[]; // subset — high-energy drops
   energyCurve: number[]; // length 32-64, normalized 0-1 across full duration
+  brightnessCurve: number[]; // spectral brightness (zero-crossing rate) 0-1
+  dynamicRange: number; // 0-1, how much loud vs soft variation
+  tempoStability: number; // 0-1, how consistent the beat interval is
+  quietRatio: number; // 0-1, fraction of section that is quiet
+  peakDensity: number; // beats per second
+  fingerprint: string; // deterministic short hash of this song section
 }
 
 export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
@@ -32,14 +38,20 @@ export function analyzeBeats(buffer: AudioBuffer, startSec = 0, endSec?: number)
   // Low-pass energy per window (approximation: sum of squared samples, we bias
   // toward low freq by downsampling — beats typically kick/bass at <200Hz)
   const energies: number[] = new Array(windowCount);
+  const brightness: number[] = new Array(windowCount);
   for (let i = 0; i < windowCount; i++) {
     let sum = 0;
+    let zc = 0;
+    let prev = 0;
     const s = startFrame + i * windowSize;
     for (let j = 0; j < windowSize; j++) {
       const v = channelData[s + j];
       sum += v * v;
+      if ((v >= 0) !== (prev >= 0)) zc++;
+      prev = v;
     }
     energies[i] = sum / windowSize;
+    brightness[i] = zc / windowSize;
   }
 
   // Onset detection: flag windows whose energy exceeds moving avg * threshold
@@ -107,12 +119,62 @@ export function analyzeBeats(buffer: AudioBuffer, startSec = 0, endSec?: number)
   const maxE = Math.max(...curve, 1e-6);
   const energyCurve = curve.map((v) => v / maxE);
 
+  const bcurve: number[] = new Array(buckets).fill(0);
+  for (let b = 0; b < buckets; b++) {
+    let sum = 0;
+    let n = 0;
+    const s = Math.floor(b * perBucket);
+    const e = Math.floor((b + 1) * perBucket);
+    for (let k = s; k < e; k++) {
+      sum += brightness[k];
+      n++;
+    }
+    bcurve[b] = n > 0 ? sum / n : 0;
+  }
+  const maxB = Math.max(...bcurve, 1e-6);
+  const brightnessCurve = bcurve.map((v) => v / maxB);
+
+  const meanE = energyCurve.reduce((a, b) => a + b, 0) / energyCurve.length;
+  const varE = energyCurve.reduce((a, b) => a + (b - meanE) ** 2, 0) / energyCurve.length;
+  const dynamicRange = Math.min(1, Math.sqrt(varE) * 2);
+
+  let tempoStability = 0.5;
+  if (beats.length > 3) {
+    const ivs: number[] = [];
+    for (let i = 1; i < beats.length; i++) ivs.push(beats[i] - beats[i - 1]);
+    const m = ivs.reduce((a, b) => a + b, 0) / ivs.length;
+    const v = ivs.reduce((a, b) => a + (b - m) ** 2, 0) / ivs.length;
+    tempoStability = Math.max(0, 1 - Math.sqrt(v) / (m || 1));
+  }
+
+  const quietRatio = energyCurve.filter((v) => v < 0.25).length / energyCurve.length;
+  const peakDensity = beats.length / Math.max(0.1, end - startSec);
+
+  const fpSrc = [
+    ...energyCurve.map((v) => Math.round(v * 15)),
+    ...brightnessCurve.map((v) => Math.round(v * 15)),
+    Math.round(bpm),
+    Math.round(dynamicRange * 100),
+  ].join(",");
+  let h = 2166136261;
+  for (let i = 0; i < fpSrc.length; i++) {
+    h ^= fpSrc.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const fingerprint = (h >>> 0).toString(36);
+
   return {
     durationSec: end - startSec,
     bpm,
     beats,
     heroBeats,
     energyCurve,
+    brightnessCurve,
+    dynamicRange,
+    tempoStability,
+    quietRatio,
+    peakDensity,
+    fingerprint,
   };
 }
 

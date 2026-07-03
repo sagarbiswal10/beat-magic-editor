@@ -206,20 +206,6 @@ function applyTransition(
       ctx.restore();
       break;
     }
-    case "whip-pan": {
-      const off = (1 - t) * W;
-      drawMedia(ctx, prev, W, H, 1, motionStyle, 1, -t * W, 0, 1);
-      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, 1, off, 0, 1);
-      // motion blur streaks
-      ctx.save();
-      ctx.globalAlpha = Math.sin(t * Math.PI) * 0.3;
-      ctx.fillStyle = "#fff";
-      for (let i = 0; i < 8; i++) {
-        ctx.fillRect(0, (i / 8) * H, W, 2);
-      }
-      ctx.restore();
-      break;
-    }
     case "zoom-punch": {
       const prevScale = 1 + t * 0.6;
       const currScale = 1.8 - t * 0.8;
