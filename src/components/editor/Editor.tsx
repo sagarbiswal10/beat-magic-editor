@@ -132,6 +132,11 @@ export function Editor() {
       setBeatAnalysis(analysis);
       const relBeats = analysis.beats.map((b) => b - audioTrim[0]);
       const relHero = analysis.heroBeats.map((b) => b - audioTrim[0]);
+      // Sample per-beat energy from the energy curve
+      const beatEnergies = relBeats.map((rb) => {
+        const idx = Math.floor((rb / durationSec) * analysis.energyCurve.length);
+        return analysis.energyCurve[Math.max(0, Math.min(analysis.energyCurve.length - 1, idx))] ?? 0.5;
+      });
       const result = await directorFn({
         data: {
           occasion,
@@ -145,6 +150,13 @@ export function Editor() {
             heroBeatTimes: relHero,
             startSec: audioTrim[0],
             endSec: audioTrim[1],
+            brightnessCurve: analysis.brightnessCurve,
+            dynamicRange: analysis.dynamicRange,
+            tempoStability: analysis.tempoStability,
+            quietRatio: analysis.quietRatio,
+            peakDensity: analysis.peakDensity,
+            fingerprint: analysis.fingerprint,
+            beatEnergies,
           },
         },
       });
