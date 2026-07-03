@@ -1,5 +1,4 @@
 import type { EditPlanT } from "./director.functions";
-import type { BeatAnalysis } from "./beat-detection";
 
 export type MediaItem =
   | { kind: "image"; el: HTMLImageElement; url: string; name: string }
@@ -10,7 +9,7 @@ export interface RenderConfig {
   width: number;
   height: number;
   media: MediaItem[];
-  beats: number[]; // relative to segment start (0 = first frame)
+  cutTimes: number[]; // cut points, relative to segment start (0 = first frame)
   plan: EditPlanT;
   audioStartSec: number;
   totalDurationSec: number;
@@ -102,7 +101,7 @@ function drawMedia(
 export function renderFrame(cfg: RenderConfig, timeSec: number) {
   const ctx = cfg.canvas.getContext("2d");
   if (!ctx) return;
-  const { width: W, height: H, beats, media, plan } = cfg;
+  const { width: W, height: H, cutTimes, media, plan } = cfg;
 
   // Fill background
   ctx.fillStyle = "#000";
@@ -111,7 +110,7 @@ export function renderFrame(cfg: RenderConfig, timeSec: number) {
   if (media.length === 0) return;
 
   // Build segment boundaries: [0, beats[0], beats[1], ..., totalDuration]
-  const bounds = [0, ...beats, cfg.totalDurationSec];
+  const bounds = [0, ...cutTimes, cfg.totalDurationSec];
   // Find current segment
   let segIdx = 0;
   for (let i = 0; i < bounds.length - 1; i++) {
@@ -129,8 +128,8 @@ export function renderFrame(cfg: RenderConfig, timeSec: number) {
   const currentMedia = media[segIdx % media.length];
   const prevMedia = segIdx > 0 ? media[(segIdx - 1) % media.length] : null;
 
-  // Transition happens in first 250ms of the segment (i.e. starting at the beat)
-  const TRANS_DUR = Math.min(0.28, segDur * 0.4);
+  // Transition happens in first ~350ms of the segment (starting at the beat)
+  const TRANS_DUR = Math.min(0.38, segDur * 0.45);
   const inTransition = segIdx > 0 && timeSec - segStart < TRANS_DUR;
   const transition = plan.transitions[segIdx - 1];
 
@@ -158,10 +157,10 @@ export function renderFrame(cfg: RenderConfig, timeSec: number) {
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, W, H);
 
-  // Beat pulse flash on hero beats
-  if (inTransition && transition?.isHero) {
-    const flashAlpha = (1 - (timeSec - segStart) / TRANS_DUR) * 0.35;
-    ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+  // Hero-beat pulse (subtle bloom, no flash if the transition already flashes)
+  if (inTransition && transition?.isHero && transition.type !== "flash-white" && transition.type !== "flash-black") {
+    const pulse = (1 - (timeSec - segStart) / TRANS_DUR) * 0.18;
+    ctx.fillStyle = `rgba(255,255,255,${pulse})`;
     ctx.fillRect(0, 0, W, H);
   }
 
@@ -213,7 +212,7 @@ function applyTransition(
       drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, currScale, 0, 0, t);
       break;
     }
-    case "flash-cut": {
+    case "flash-white": {
       if (t < 0.5) {
         drawMedia(ctx, prev, W, H, 1, motionStyle);
       } else {
@@ -222,6 +221,77 @@ function applyTransition(
       const flashA = 1 - Math.abs(t - 0.5) * 2;
       ctx.fillStyle = `rgba(255,255,255,${flashA})`;
       ctx.fillRect(0, 0, W, H);
+      break;
+    }
+    case "flash-black": {
+      if (t < 0.5) {
+        drawMedia(ctx, prev, W, H, 1, motionStyle);
+      } else {
+        drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle);
+      }
+      const flashA = 1 - Math.abs(t - 0.5) * 2;
+      ctx.fillStyle = `rgba(0,0,0,${flashA})`;
+      ctx.fillRect(0, 0, W, H);
+      break;
+    }
+    case "push-left": {
+      drawMedia(ctx, prev, W, H, 1, motionStyle, 1, -t * W, 0, 1);
+      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, 1, (1 - t) * W, 0, 1);
+      break;
+    }
+    case "push-right": {
+      drawMedia(ctx, prev, W, H, 1, motionStyle, 1, t * W, 0, 1);
+      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, 1, -(1 - t) * W, 0, 1);
+      break;
+    }
+    case "push-up": {
+      drawMedia(ctx, prev, W, H, 1, motionStyle, 1, 0, -t * H, 1);
+      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, 1, 0, (1 - t) * H, 1);
+      break;
+    }
+    case "morph-zoom": {
+      ctx.save();
+      ctx.filter = `blur(${(1 - t) * 6 + t * 4}px)`;
+      const prevScale = 1 + t * 1.4;
+      const currScale = 2.2 - t * 1.2;
+      drawMedia(ctx, prev, W, H, 1, motionStyle, prevScale, 0, 0, 1 - t);
+      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, currScale, 0, 0, t);
+      ctx.restore();
+      break;
+    }
+    case "light-leak": {
+      drawMedia(ctx, prev, W, H, 1, motionStyle, 1, 0, 0, 1 - t);
+      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, 1, 0, 0, t);
+      // Warm horizontal leak sweeping across
+      const cx = t * W * 1.4 - W * 0.2;
+      const grad = ctx.createRadialGradient(cx, H * 0.5, 0, cx, H * 0.5, W * 0.7);
+      const bloom = 1 - Math.abs(t - 0.5) * 2;
+      grad.addColorStop(0, `rgba(255,210,140,${0.55 * bloom})`);
+      grad.addColorStop(0.4, `rgba(255,150,80,${0.28 * bloom})`);
+      grad.addColorStop(1, "rgba(255,120,60,0)");
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+      break;
+    }
+    case "film-burn": {
+      drawMedia(ctx, t < 0.5 ? prev : curr, W, H, currentSegProgress, motionStyle);
+      const burn = 1 - Math.abs(t - 0.5) * 2;
+      const cx = W * (0.3 + 0.4 * t);
+      const cy = H * (0.4 + 0.2 * (t - 0.5));
+      const r = W * (0.15 + 0.7 * t);
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      grad.addColorStop(0, `rgba(255,255,240,${0.9 * burn})`);
+      grad.addColorStop(0.3, `rgba(255,180,90,${0.7 * burn})`);
+      grad.addColorStop(0.7, `rgba(180,40,20,${0.35 * burn})`);
+      grad.addColorStop(1, "rgba(20,0,0,0)");
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
       break;
     }
     case "glitch": {
@@ -235,12 +305,6 @@ function applyTransition(
         const slice = ctx.getImageData(0, y, W, h);
         ctx.putImageData(slice, dx, y);
       }
-      break;
-    }
-    case "spin": {
-      const angle = (1 - t) * Math.PI * 0.5;
-      drawMedia(ctx, prev, W, H, 1, motionStyle, 1 + t * 0.3, 0, 0, 1 - t, -angle);
-      drawMedia(ctx, curr, W, H, currentSegProgress, motionStyle, 1.3 - t * 0.3, 0, 0, t, angle);
       break;
     }
   }
@@ -305,7 +369,6 @@ export async function exportVideo(
   audioFadeInSec: number,
   audioFadeOutSec: number,
   audioVolume: number,
-  sfxSchedule: { time: number; kind: "whoosh" | "impact" | "riser" | "none"; intensity: number }[],
   fps: number,
   onProgress: (p: number) => void,
 ): Promise<Blob> {
@@ -332,12 +395,6 @@ export async function exportVideo(
     songGain.gain.linearRampToValueAtTime(0, now0 + durationSec);
   }
   songSrc.connect(songGain).connect(streamDest);
-
-  // Schedule SFX
-  const { scheduleSfx } = await import("./sfx");
-  for (const s of sfxSchedule) {
-    scheduleSfx(audioCtx, streamDest, s.kind, now0 + s.time, s.intensity);
-  }
 
   // Canvas stream
   const canvasStream = (cfg.canvas as HTMLCanvasElement).captureStream(fps);

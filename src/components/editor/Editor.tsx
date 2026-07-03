@@ -17,6 +17,7 @@ import {
   Scissors,
   Crop,
   Heart,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -27,6 +28,7 @@ import {
   decodeAudioFile,
   drawWaveform,
   findBestWindow,
+  selectCutBeats,
   type BeatAnalysis,
 } from "@/lib/beat-detection";
 import {
@@ -37,10 +39,27 @@ import {
   type AspectKey,
   type MediaItem,
 } from "@/lib/render-engine";
-import { scheduleSfx } from "@/lib/sfx";
 import { generateEditPlan, type EditPlanT } from "@/lib/director.functions";
 
 const OCCASIONS = ["Wedding", "Birthday", "Anniversary", "Party", "Baby Shower", "Graduation", "Travel"] as const;
+
+const TRANSITION_TYPES = [
+  "cut",
+  "cross-dissolve",
+  "blur-fade",
+  "zoom-punch",
+  "morph-zoom",
+  "flash-white",
+  "flash-black",
+  "push-left",
+  "push-right",
+  "push-up",
+  "light-leak",
+  "film-burn",
+  "glitch",
+] as const;
+
+type TransitionType = (typeof TRANSITION_TYPES)[number];
 
 export function Editor() {
   const [media, setMedia] = useState<MediaItem[]>([]);
@@ -53,6 +72,7 @@ export function Editor() {
   const [occasion, setOccasion] = useState<string>("Wedding");
   const [aspect, setAspect] = useState<AspectKey>("9:16");
   const [beatAnalysis, setBeatAnalysis] = useState<BeatAnalysis | null>(null);
+  const [cutTimesAbs, setCutTimesAbs] = useState<number[]>([]); // absolute (in original buffer)
   const [plan, setPlan] = useState<EditPlanT | null>(null);
   const [isDirecting, setIsDirecting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -62,7 +82,7 @@ export function Editor() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveformRef = useRef<HTMLCanvasElement>(null);
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const timelineWaveRef = useRef<HTMLCanvasElement>(null);
   const previewCtxRef = useRef<AudioContext | null>(null);
   const previewSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const previewStartWallRef = useRef<number>(0);
@@ -96,6 +116,7 @@ export function Editor() {
       setAudioTrim([0, Math.min(30, buffer.duration)]);
       setPlan(null);
       setBeatAnalysis(null);
+      setCutTimesAbs([]);
       toast.success(`Loaded ${file.name} (${buffer.duration.toFixed(1)}s)`, { id: "audio" });
     } catch (e) {
       toast.error("Could not decode audio: " + (e as Error).message, { id: "audio" });
@@ -107,10 +128,11 @@ export function Editor() {
     const { start, end } = findBestWindow(audioBuffer, Math.min(30, audioBuffer.duration));
     setAudioTrim([start, end]);
     setPlan(null);
+    setCutTimesAbs([]);
     toast.success(`Auto-picked best ${(end - start).toFixed(0)}s`);
   }, [audioBuffer]);
 
-  // ---- Waveform draw ----
+  // ---- Waveform draw for trim panel ----
   useEffect(() => {
     if (!audioBuffer || !waveformRef.current) return;
     const c = waveformRef.current;
@@ -119,6 +141,32 @@ export function Editor() {
     drawWaveform(c, audioBuffer, { color: "rgba(245,158,11,0.65)" });
   }, [audioBuffer]);
 
+  // ---- Timeline waveform (trimmed section) ----
+  useEffect(() => {
+    if (!audioBuffer || !timelineWaveRef.current) return;
+    const c = timelineWaveRef.current;
+    c.width = c.clientWidth * devicePixelRatio;
+    c.height = c.clientHeight * devicePixelRatio;
+    drawWaveform(c, audioBuffer, {
+      color: "rgba(148,163,184,0.55)",
+      startSec: audioTrim[0],
+      endSec: audioTrim[1],
+    });
+  }, [audioBuffer, audioTrim]);
+
+  // ---- Analyze beats and pick sparse cuts ----
+  const analyze = useCallback(() => {
+    if (!audioBuffer) return null;
+    const analysis = analyzeBeats(audioBuffer, audioTrim[0], audioTrim[1]);
+    setBeatAnalysis(analysis);
+    const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
+      minGapSec: 1.1,
+      targetSecPerCut: Math.max(1.4, durationSec / Math.max(3, media.length)),
+    });
+    setCutTimesAbs(cuts);
+    return { analysis, cuts };
+  }, [audioBuffer, audioTrim, durationSec, media.length]);
+
   // ---- AI Director ----
   const runDirector = useCallback(async () => {
     if (!audioBuffer || media.length < 2) {
@@ -126,26 +174,34 @@ export function Editor() {
       return;
     }
     setIsDirecting(true);
-    toast.loading("Analyzing beats + directing your edit...", { id: "director" });
+    toast.loading("Feeling the song + directing your edit...", { id: "director" });
     try {
       const analysis = analyzeBeats(audioBuffer, audioTrim[0], audioTrim[1]);
       setBeatAnalysis(analysis);
-      const relBeats = analysis.beats.map((b) => b - audioTrim[0]);
-      const relHero = analysis.heroBeats.map((b) => b - audioTrim[0]);
-      // Sample per-beat energy from the energy curve
-      const beatEnergies = relBeats.map((rb) => {
+      const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
+        minGapSec: 1.1,
+        targetSecPerCut: Math.max(1.4, durationSec / Math.max(3, media.length)),
+      });
+      setCutTimesAbs(cuts);
+
+      const relHero = analysis.heroBeats
+        .map((b) => b - audioTrim[0])
+        .filter((b) => b > 0 && b < durationSec);
+      const cutBeatTimes = cuts.map((c) => c - audioTrim[0]);
+      const cutBeatEnergies = cutBeatTimes.map((rb) => {
         const idx = Math.floor((rb / durationSec) * analysis.energyCurve.length);
         return analysis.energyCurve[Math.max(0, Math.min(analysis.energyCurve.length - 1, idx))] ?? 0.5;
       });
+
       const result = await directorFn({
         data: {
           occasion,
           aspectRatio: aspect,
           mediaCount: media.length,
           audio: {
-            durationSec: durationSec,
+            durationSec,
             bpm: analysis.bpm,
-            beatCount: relBeats.length,
+            beatCount: analysis.beats.length,
             energyCurve: analysis.energyCurve,
             heroBeatTimes: relHero,
             startSec: audioTrim[0],
@@ -156,12 +212,13 @@ export function Editor() {
             quietRatio: analysis.quietRatio,
             peakDensity: analysis.peakDensity,
             fingerprint: analysis.fingerprint,
-            beatEnergies,
+            cutBeatEnergies,
+            cutBeatTimes,
           },
         },
       });
       setPlan(result);
-      toast.success(`AI directed: "${result.styleName}" — ${relBeats.length} beat-cuts`, { id: "director" });
+      toast.success(`AI directed: "${result.styleName}" — ${cuts.length} cuts`, { id: "director" });
     } catch (e) {
       toast.error("Director failed: " + (e as Error).message, { id: "director" });
     } finally {
@@ -169,38 +226,73 @@ export function Editor() {
     }
   }, [audioBuffer, media.length, audioTrim, occasion, aspect, durationSec, directorFn]);
 
+  // ---- Timeline editing: add/remove cut points, change transitions ----
+  const toggleCutAtBeat = useCallback(
+    (beatAbs: number) => {
+      setCutTimesAbs((prev) => {
+        const exists = prev.some((c) => Math.abs(c - beatAbs) < 0.01);
+        const next = exists ? prev.filter((c) => Math.abs(c - beatAbs) >= 0.01) : [...prev, beatAbs].sort((a, b) => a - b);
+        // Sync plan transitions length
+        setPlan((p) => {
+          if (!p) return p;
+          const target = next.length;
+          const current = p.transitions.slice(0, target);
+          while (current.length < target) current.push({ type: "cross-dissolve", isHero: false });
+          return { ...p, transitions: current };
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const changeTransition = useCallback((i: number, patch: Partial<EditPlanT["transitions"][number]>) => {
+    setPlan((p) => {
+      if (!p) return p;
+      return {
+        ...p,
+        transitions: p.transitions.map((t, idx) => (idx === i ? { ...t, ...patch } : t)),
+      };
+    });
+  }, []);
+
   // ---- Build render config ----
+  const relCuts = useMemo(
+    () =>
+      cutTimesAbs
+        .map((c) => c - audioTrim[0])
+        .filter((c) => c > 0.05 && c < durationSec - 0.05)
+        .sort((a, b) => a - b),
+    [cutTimesAbs, audioTrim, durationSec],
+  );
+
   const renderCfg = useMemo(() => {
-    if (!canvasRef.current || !beatAnalysis || !plan || media.length === 0) return null;
-    const relBeats = beatAnalysis.beats.map((b) => b - audioTrim[0]).filter((b) => b > 0.05 && b < durationSec);
+    if (!canvasRef.current || !plan || media.length === 0) return null;
     return {
       canvas: canvasRef.current,
       width: dims.width,
       height: dims.height,
       media,
-      beats: relBeats,
+      cutTimes: relCuts,
       plan,
       audioStartSec: audioTrim[0],
       totalDurationSec: durationSec,
       captionHook: plan.captionHook,
       captionOutro: plan.captionOutro,
     };
-  }, [beatAnalysis, plan, media, dims, audioTrim, durationSec]);
+  }, [plan, media, dims, audioTrim, durationSec, relCuts]);
 
-  // Sync canvas dims
   useEffect(() => {
     if (!canvasRef.current) return;
     canvasRef.current.width = dims.width;
     canvasRef.current.height = dims.height;
   }, [dims]);
 
-  // Render on time change (preview)
   useEffect(() => {
     if (!renderCfg) return;
     renderFrame(renderCfg, previewTime);
   }, [previewTime, renderCfg]);
 
-  // Initial poster render
   useEffect(() => {
     if (renderCfg && !isPlaying) renderFrame(renderCfg, 0);
   }, [renderCfg, isPlaying]);
@@ -228,7 +320,6 @@ export function Editor() {
     stopPreview();
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     previewCtxRef.current = ctx;
-    // Trimmed song
     const startFrame = Math.floor(audioTrim[0] * audioBuffer.sampleRate);
     const endFrame = Math.floor(audioTrim[1] * audioBuffer.sampleRate);
     const len = endFrame - startFrame;
@@ -255,15 +346,6 @@ export function Editor() {
     src.start(t0);
     previewSourceRef.current = src;
 
-    // Schedule SFX for preview
-    if (plan && renderCfg) {
-      renderCfg.beats.forEach((b, i) => {
-        const tr = plan.transitions[i];
-        if (tr) scheduleSfx(ctx, ctx.destination, tr.sfx, t0 + b, tr.isHero ? 1 : 0.65);
-      });
-    }
-
-    // Start videos
     for (const m of media) {
       if (m.kind === "video") {
         m.el.currentTime = 0;
@@ -286,7 +368,7 @@ export function Editor() {
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
-  }, [renderCfg, audioBuffer, audioTrim, audioVolume, fadeIn, fadeOut, durationSec, plan, media, stopPreview]);
+  }, [renderCfg, audioBuffer, audioTrim, audioVolume, fadeIn, fadeOut, durationSec, media, stopPreview]);
 
   useEffect(() => () => stopPreview(), [stopPreview]);
 
@@ -298,10 +380,6 @@ export function Editor() {
     setExportProgress(0);
     toast.loading("Rendering your reel...", { id: "export" });
     try {
-      const sfxSchedule = renderCfg.beats.map((b, i) => {
-        const tr = plan.transitions[i];
-        return { time: b, kind: tr?.sfx ?? "none", intensity: tr?.isHero ? 1 : 0.65 };
-      });
       const blob = await exportVideo(
         renderCfg,
         audioBuffer,
@@ -310,7 +388,6 @@ export function Editor() {
         fadeIn,
         fadeOut,
         audioVolume,
-        sfxSchedule,
         30,
         setExportProgress,
       );
@@ -333,63 +410,56 @@ export function Editor() {
     <div className="min-h-screen bg-background text-foreground">
       <Toaster theme="dark" position="top-right" />
 
-      {/* Header */}
       <header className="border-b border-border/60 bg-card/40 backdrop-blur">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-[1800px] items-center justify-between px-6 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-lg shadow-primary/20">
-              <Film className="h-5 w-5" />
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-lg shadow-primary/20">
+              <Film className="h-4 w-4" />
             </div>
             <div>
-              <h1 className="text-lg font-black tracking-tight">Reelith</h1>
-              <p className="text-xs text-muted-foreground">AI beat-synced reel editor</p>
+              <h1 className="text-base font-black tracking-tight">Reelith Studio</h1>
+              <p className="text-[10px] text-muted-foreground">AI-directed reel editor · timeline mode</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="hidden text-xs text-muted-foreground md:inline">
-              Every transition on the beat.
-            </span>
-            <Heart className="h-4 w-4 text-accent" />
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Heart className="h-3.5 w-3.5 text-accent" />
+            <span className="hidden md:inline">Sparse cuts. No sound effects. Pure edit.</span>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-[1600px] gap-6 px-6 py-6 lg:grid-cols-[380px_1fr_360px]">
-        {/* LEFT: Media */}
-        <section className="space-y-4">
-          <Panel title="Media Library" icon={<ImageIcon className="h-4 w-4" />}>
+      {/* Top workspace: sidebars + preview */}
+      <main className="mx-auto grid max-w-[1800px] gap-4 px-4 py-4 lg:grid-cols-[320px_1fr_320px]">
+        {/* LEFT sidebar */}
+        <section className="space-y-3">
+          <Panel title="Media" icon={<ImageIcon className="h-4 w-4" />}>
             <MediaDropzone onFiles={onMediaFiles} />
             {media.length > 0 && (
-              <div className="mt-3 grid grid-cols-3 gap-2">
+              <div className="mt-3 grid grid-cols-3 gap-1.5">
                 {media.map((m, i) => (
                   <div key={m.url} className="group relative aspect-square overflow-hidden rounded-md border border-border/60 bg-black">
                     {m.kind === "image" ? (
                       <img src={m.url} className="h-full w-full object-cover" alt="" />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center bg-secondary">
-                        <Video className="h-6 w-6 text-primary" />
+                        <Video className="h-5 w-5 text-primary" />
                       </div>
                     )}
-                    <div className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[10px] text-white">
-                      {i + 1}. {m.name}
-                    </div>
+                    <div className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[9px] font-bold text-white">{i + 1}</div>
                     <button
                       onClick={() => setMedia((p) => p.filter((_, idx) => idx !== i))}
-                      className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/80 opacity-0 transition group-hover:opacity-100"
+                      className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-black/80 opacity-0 transition group-hover:opacity-100"
                     >
-                      <X className="h-3 w-3 text-white" />
+                      <X className="h-2.5 w-2.5 text-white" />
                     </button>
                   </div>
                 ))}
               </div>
             )}
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              {media.length === 0 ? "Photos and short clips. Reorder by removing and re-adding." : `${media.length} clip${media.length > 1 ? "s" : ""}`}
-            </p>
           </Panel>
 
           <Panel title="Occasion & Format" icon={<Crop className="h-4 w-4" />}>
-            <label className="text-xs font-medium text-muted-foreground">Occasion</label>
+            <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Occasion</label>
             <Select value={occasion} onValueChange={setOccasion}>
               <SelectTrigger className="mt-1 bg-secondary">
                 <SelectValue />
@@ -400,29 +470,29 @@ export function Editor() {
                 ))}
               </SelectContent>
             </Select>
-            <label className="mt-3 block text-xs font-medium text-muted-foreground">Aspect ratio</label>
-            <div className="mt-1 grid grid-cols-2 gap-2">
+            <label className="mt-3 block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Aspect ratio</label>
+            <div className="mt-1 grid grid-cols-2 gap-1.5">
               {(Object.keys(ASPECT_RATIOS) as AspectKey[]).map((k) => (
                 <button
                   key={k}
                   onClick={() => setAspect(k)}
-                  className={`rounded-md border px-2 py-2 text-xs transition ${
+                  className={`rounded-md border px-2 py-1.5 text-xs transition ${
                     aspect === k
                       ? "border-primary bg-primary/10 text-primary"
                       : "border-border bg-secondary text-muted-foreground hover:border-primary/50"
                   }`}
                 >
                   <div className="font-bold">{k}</div>
-                  <div className="text-[10px] opacity-70">{ASPECT_RATIOS[k].label}</div>
+                  <div className="text-[9px] opacity-70">{ASPECT_RATIOS[k].label}</div>
                 </button>
               ))}
             </div>
           </Panel>
         </section>
 
-        {/* CENTER: Preview */}
-        <section className="flex flex-col items-center">
-          <div className="w-full rounded-xl border border-border/60 bg-card/40 p-4">
+        {/* CENTER: preview */}
+        <section className="flex flex-col">
+          <div className="rounded-xl border border-border/60 bg-card/40 p-4">
             <div className="flex items-center justify-between pb-3">
               <div className="flex items-center gap-2">
                 <Sparkles className="h-4 w-4 text-primary" />
@@ -437,12 +507,12 @@ export function Editor() {
                 {previewTime.toFixed(1)}s / {durationSec.toFixed(1)}s
               </div>
             </div>
-            <div className="flex justify-center rounded-lg bg-black p-4">
+            <div className="flex justify-center rounded-lg bg-black p-3">
               <canvas
                 ref={canvasRef}
                 style={{
                   aspectRatio: `${dims.width}/${dims.height}`,
-                  maxHeight: "70vh",
+                  maxHeight: "52vh",
                   maxWidth: "100%",
                   background: "#000",
                 }}
@@ -450,111 +520,50 @@ export function Editor() {
               />
             </div>
 
-            {/* Timeline scrubber */}
-            {plan && beatAnalysis && (
-              <div className="mt-3">
-                <div className="relative h-2 rounded-full bg-secondary">
-                  <div
-                    className="absolute inset-y-0 left-0 rounded-full bg-primary"
-                    style={{ width: `${(previewTime / durationSec) * 100}%` }}
-                  />
-                  {beatAnalysis.beats.map((b, i) => {
-                    const rel = b - audioTrim[0];
-                    if (rel < 0 || rel > durationSec) return null;
-                    const hero = beatAnalysis.heroBeats.includes(b);
-                    return (
-                      <div
-                        key={i}
-                        className={`absolute top-1/2 -translate-y-1/2 rounded-full ${
-                          hero ? "h-3 w-1 bg-accent" : "h-2 w-0.5 bg-primary/60"
-                        }`}
-                        style={{ left: `${(rel / durationSec) * 100}%` }}
-                      />
-                    );
-                  })}
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={durationSec}
-                  step={0.05}
-                  value={previewTime}
-                  onChange={(e) => {
-                    stopPreview();
-                    setPreviewTime(parseFloat(e.target.value));
-                  }}
-                  className="mt-1 w-full accent-primary"
-                />
-              </div>
-            )}
-
-            {/* Controls */}
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-              <Button
-                size="lg"
-                onClick={isPlaying ? stopPreview : playPreview}
-                disabled={!plan || !renderCfg}
-                variant="secondary"
-              >
-                {isPlaying ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <Button size="sm" onClick={isPlaying ? stopPreview : playPreview} disabled={!plan || !renderCfg} variant="secondary">
+                {isPlaying ? <Pause className="mr-1.5 h-3.5 w-3.5" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
                 {isPlaying ? "Stop" : "Play"}
               </Button>
               <Button
-                size="lg"
+                size="sm"
                 onClick={runDirector}
                 disabled={isDirecting || !audioBuffer || media.length < 2}
                 className="bg-primary text-primary-foreground shadow-lg shadow-primary/30 hover:bg-primary/90"
               >
-                {isDirecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
+                {isDirecting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1.5 h-3.5 w-3.5" />}
                 {plan ? "Re-direct" : "AI Direct Edit"}
               </Button>
-              <Button
-                size="lg"
-                onClick={doExport}
-                disabled={!plan || isExporting}
-                variant="outline"
-                className="border-accent text-accent hover:bg-accent hover:text-accent-foreground"
-              >
-                {isExporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+              <Button size="sm" onClick={doExport} disabled={!plan || isExporting} variant="outline" className="border-accent text-accent hover:bg-accent hover:text-accent-foreground">
+                {isExporting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1.5 h-3.5 w-3.5" />}
                 Export {dims.width}×{dims.height}
               </Button>
             </div>
 
             {isExporting && (
               <div className="mt-3">
-                <Progress value={exportProgress * 100} className="h-2" />
-                <p className="mt-1 text-center text-xs text-muted-foreground">
-                  Rendering in real-time — please keep this tab focused. {Math.round(exportProgress * 100)}%
+                <Progress value={exportProgress * 100} className="h-1.5" />
+                <p className="mt-1 text-center text-[10px] text-muted-foreground">
+                  Rendering in real-time — keep this tab focused. {Math.round(exportProgress * 100)}%
                 </p>
               </div>
             )}
           </div>
 
           {plan && (
-            <div className="mt-4 w-full rounded-xl border border-border/60 bg-card/40 p-4">
-              <div className="flex items-center gap-2 pb-2">
-                <Sparkles className="h-3.5 w-3.5 text-primary" />
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  AI Director's Notes
-                </span>
+            <div className="mt-3 rounded-xl border border-border/60 bg-card/40 p-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-3 w-3 text-primary" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Director notes</span>
               </div>
-              <p className="text-sm">
-                <span className="font-semibold text-primary">Style:</span> {plan.styleReference}
-              </p>
-              <p className="mt-1 text-sm">
-                <span className="font-semibold text-primary">Pacing:</span> {plan.pacingNote}
-              </p>
-              <TransitionEditor
-                plan={plan}
-                beats={renderCfg?.beats ?? []}
-                onChange={(next) => setPlan(next)}
-              />
+              <p className="mt-1.5 text-xs"><span className="font-semibold text-primary">Style:</span> {plan.styleReference}</p>
+              <p className="mt-1 text-xs"><span className="font-semibold text-primary">Pacing:</span> {plan.pacingNote}</p>
             </div>
           )}
         </section>
 
-        {/* RIGHT: Audio */}
-        <section className="space-y-4">
+        {/* RIGHT sidebar */}
+        <section className="space-y-3">
           <Panel title="Soundtrack" icon={<Music className="h-4 w-4" />}>
             {!audioFile ? (
               <AudioDropzone onFile={onAudioFile} />
@@ -564,7 +573,7 @@ export function Editor() {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-medium">{audioFile.name}</p>
                     <p className="text-[10px] text-muted-foreground">
-                      {audioBuffer?.duration.toFixed(1)}s • {audioBuffer?.numberOfChannels}ch
+                      {audioBuffer?.duration.toFixed(1)}s · {audioBuffer?.numberOfChannels}ch
                     </p>
                   </div>
                   <button
@@ -572,6 +581,7 @@ export function Editor() {
                       setAudioFile(null);
                       setAudioBuffer(null);
                       setPlan(null);
+                      setCutTimesAbs([]);
                     }}
                     className="ml-2 text-muted-foreground hover:text-foreground"
                   >
@@ -581,7 +591,7 @@ export function Editor() {
 
                 {audioBuffer && (
                   <div className="mt-3">
-                    <div className="relative h-16 rounded-md bg-secondary/60 overflow-hidden">
+                    <div className="relative h-14 overflow-hidden rounded-md bg-secondary/60">
                       <canvas ref={waveformRef} className="absolute inset-0 h-full w-full" />
                       <div
                         className="absolute inset-y-0 border-l-2 border-r-2 border-primary bg-primary/10"
@@ -592,9 +602,9 @@ export function Editor() {
                       />
                     </div>
                     <div className="mt-3">
-                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                        <span>Trim: {audioTrim[0].toFixed(1)}s → {audioTrim[1].toFixed(1)}s</span>
-                        <span>{(audioTrim[1] - audioTrim[0]).toFixed(1)}s</span>
+                      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                        <span>{audioTrim[0].toFixed(1)}s → {audioTrim[1].toFixed(1)}s</span>
+                        <span>{durationSec.toFixed(1)}s</span>
                       </div>
                       <Slider
                         value={audioTrim}
@@ -606,6 +616,7 @@ export function Editor() {
                           const clamped = Math.min(60, Math.max(3, b - a));
                           setAudioTrim([a, a + clamped]);
                           setPlan(null);
+                          setCutTimesAbs([]);
                         }}
                         className="mt-2"
                       />
@@ -621,7 +632,7 @@ export function Editor() {
           </Panel>
 
           {audioBuffer && (
-            <Panel title="Audio Controls" icon={<Music className="h-4 w-4" />}>
+            <Panel title="Audio" icon={<Music className="h-4 w-4" />}>
               <SliderRow label="Volume" value={audioVolume} min={0} max={1} step={0.05} onChange={setAudioVolume} display={`${Math.round(audioVolume * 100)}%`} />
               <SliderRow label="Fade in" value={fadeIn} min={0} max={3} step={0.1} onChange={setFadeIn} display={`${fadeIn.toFixed(1)}s`} />
               <SliderRow label="Fade out" value={fadeOut} min={0} max={3} step={0.1} onChange={setFadeOut} display={`${fadeOut.toFixed(1)}s`} />
@@ -632,37 +643,301 @@ export function Editor() {
             <Panel title="Beat Analysis" icon={<Sparkles className="h-4 w-4" />}>
               <div className="grid grid-cols-3 gap-2 text-center">
                 <Stat label="BPM" value={beatAnalysis.bpm} />
-                <Stat label="Beats" value={beatAnalysis.beats.length} />
+                <Stat label="Cuts" value={relCuts.length} />
                 <Stat label="Drops" value={beatAnalysis.heroBeats.length} />
               </div>
-              <div className="mt-3 flex h-8 items-end gap-px">
-                {beatAnalysis.energyCurve.map((v, i) => (
-                  <div
-                    key={i}
-                    className="flex-1 rounded-t bg-primary/70"
-                    style={{ height: `${Math.max(4, v * 100)}%` }}
-                  />
-                ))}
-              </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">Energy curve across the trimmed section</p>
             </Panel>
           )}
         </section>
       </main>
 
-      <footer className="border-t border-border/60 py-6 text-center text-xs text-muted-foreground">
-        Every transition lands on a beat. Made with obsession.
+      {/* Bottom TIMELINE editor — Descript-style */}
+      <div className="mx-auto max-w-[1800px] px-4 pb-8">
+        <Timeline
+          durationSec={durationSec}
+          beats={beatAnalysis?.beats.map((b) => b - audioTrim[0]).filter((b) => b > 0 && b < durationSec) ?? []}
+          heroBeats={beatAnalysis?.heroBeats.map((b) => b - audioTrim[0]).filter((b) => b > 0 && b < durationSec) ?? []}
+          cutTimes={relCuts}
+          absCutTimes={cutTimesAbs}
+          audioStart={audioTrim[0]}
+          media={media}
+          plan={plan}
+          previewTime={previewTime}
+          waveformRef={timelineWaveRef}
+          hasAudio={!!audioBuffer}
+          onScrub={(t) => {
+            stopPreview();
+            setPreviewTime(Math.max(0, Math.min(durationSec, t)));
+          }}
+          onToggleBeat={(beatRel) => {
+            const abs = beatRel + audioTrim[0];
+            toggleCutAtBeat(abs);
+          }}
+          onChangeTransition={changeTransition}
+          onAnalyze={analyze}
+        />
+      </div>
+
+      <footer className="border-t border-border/60 py-4 text-center text-[10px] text-muted-foreground">
+        Click a beat marker to toggle it as a cut · click a clip to change its transition · no external SFX
       </footer>
     </div>
   );
 }
 
+// ============================================================================
+// TIMELINE EDITOR
+// ============================================================================
+function Timeline({
+  durationSec,
+  beats,
+  heroBeats,
+  cutTimes,
+  absCutTimes,
+  audioStart,
+  media,
+  plan,
+  previewTime,
+  waveformRef,
+  hasAudio,
+  onScrub,
+  onToggleBeat,
+  onChangeTransition,
+  onAnalyze,
+}: {
+  durationSec: number;
+  beats: number[];
+  heroBeats: number[];
+  cutTimes: number[];
+  absCutTimes: number[];
+  audioStart: number;
+  media: MediaItem[];
+  plan: EditPlanT | null;
+  previewTime: number;
+  waveformRef: React.RefObject<HTMLCanvasElement | null>;
+  hasAudio: boolean;
+  onScrub: (t: number) => void;
+  onToggleBeat: (beatRel: number) => void;
+  onChangeTransition: (i: number, patch: Partial<EditPlanT["transitions"][number]>) => void;
+  onAnalyze: () => void;
+}) {
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+
+  if (durationSec <= 0.1) {
+    return (
+      <div className="rounded-xl border border-dashed border-border/60 bg-card/20 p-8 text-center">
+        <p className="text-sm text-muted-foreground">Upload a song to unlock the timeline editor.</p>
+      </div>
+    );
+  }
+
+  // Build clip segments — [0, cut1, cut2, ..., duration]
+  const bounds = [0, ...cutTimes, durationSec];
+  const segments: Array<{ start: number; end: number; media: MediaItem | undefined; index: number }> = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    segments.push({ start: bounds[i], end: bounds[i + 1], media: media[i % Math.max(1, media.length)], index: i });
+  }
+
+  // Timeline seconds -> percent
+  const pct = (t: number) => (t / durationSec) * 100;
+
+  // Tick marks every 1s
+  const seconds = Math.ceil(durationSec);
+  const ticks: number[] = [];
+  for (let s = 0; s <= seconds; s++) ticks.push(s);
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-card/40 shadow-xl">
+      {/* toolbar */}
+      <div className="flex items-center justify-between border-b border-border/60 px-4 py-2">
+        <div className="flex items-center gap-2">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Timeline</div>
+          <span className="rounded bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+            {previewTime.toFixed(2)}s / {durationSec.toFixed(1)}s
+          </span>
+          <span className="rounded bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
+            {cutTimes.length} cut{cutTimes.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          {beats.length === 0 && hasAudio && (
+            <button
+              onClick={onAnalyze}
+              className="rounded bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20"
+            >
+              <Sparkles className="mr-1 inline h-3 w-3" />
+              Analyze beats
+            </button>
+          )}
+          <span className="hidden md:inline">Click beat = toggle cut · Click clip = change transition</span>
+        </div>
+      </div>
+
+      {/* Ruler */}
+      <div className="relative h-5 border-b border-border/40 px-3">
+        {ticks.map((s) => (
+          <div key={s} className="absolute top-0 flex h-full flex-col items-start" style={{ left: `calc(${pct(s)}% + 12px - 12px)` }}>
+            <div className="h-2 w-px bg-border" />
+            <span className="ml-0.5 mt-0.5 text-[9px] tabular-nums text-muted-foreground">{s}s</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Clip strip */}
+      <div className="relative px-3 pt-3">
+        <div ref={stripRef} className="relative h-16 overflow-hidden rounded-md border border-border/60 bg-black">
+          {segments.map((seg) => {
+            const w = pct(seg.end - seg.start);
+            const left = pct(seg.start);
+            const m = seg.media;
+            const tr = plan?.transitions[seg.index - 1];
+            return (
+              <button
+                key={seg.index}
+                type="button"
+                onClick={() => setEditingIdx(seg.index === 0 ? null : seg.index - 1)}
+                className={`group absolute top-0 h-full overflow-hidden border-r-2 border-primary/70 text-left transition ${
+                  editingIdx === seg.index - 1 ? "ring-2 ring-inset ring-accent" : ""
+                }`}
+                style={{ left: `${left}%`, width: `${w}%` }}
+                title={seg.index === 0 ? "Opening clip" : `Cut ${seg.index}: ${tr?.type ?? ""}`}
+              >
+                {m?.kind === "image" ? (
+                  <img src={m.url} alt="" className="h-full w-full object-cover opacity-90" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center bg-secondary">
+                    <Video className="h-4 w-4 text-primary" />
+                  </div>
+                )}
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/90 to-transparent px-1 pb-0.5 pt-4 text-[9px] font-medium text-white">
+                  {seg.index === 0 ? "opener" : tr?.type ?? "—"}
+                  {tr?.isHero && <span className="ml-1 text-accent">★</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Beat markers row */}
+      <div className="relative mx-3 mt-2 h-7 rounded-md bg-background/40">
+        {beats.map((b, i) => {
+          const isCut = absCutTimes.some((c) => Math.abs(c - audioStart - b) < 0.02);
+          const isHero = heroBeats.some((h) => Math.abs(h - b) < 0.02);
+          return (
+            <button
+              key={i}
+              onClick={() => onToggleBeat(b)}
+              className="group absolute top-0 flex h-full w-3 -translate-x-1/2 items-center justify-center"
+              style={{ left: `${pct(b)}%` }}
+              title={`${b.toFixed(2)}s ${isHero ? "· hero" : ""} — ${isCut ? "click to remove cut" : "click to add cut"}`}
+            >
+              <div
+                className={`w-0.5 transition-all ${
+                  isCut
+                    ? isHero
+                      ? "h-full bg-accent"
+                      : "h-full bg-primary"
+                    : isHero
+                      ? "h-3 bg-accent/40 group-hover:bg-accent"
+                      : "h-2 bg-muted-foreground/40 group-hover:bg-primary"
+                }`}
+              />
+              {isCut && (
+                <div
+                  className={`pointer-events-none absolute -top-1 h-1.5 w-1.5 rounded-full ${
+                    isHero ? "bg-accent" : "bg-primary"
+                  }`}
+                />
+              )}
+            </button>
+          );
+        })}
+        {beats.length === 0 && (
+          <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">
+            {hasAudio ? "Run analyze to see beats" : "Upload a song to see beats"}
+          </div>
+        )}
+      </div>
+
+      {/* Waveform + playhead + scrub */}
+      <div
+        className="relative mx-3 my-2 h-14 cursor-pointer overflow-hidden rounded-md bg-background/40"
+        onClick={(e) => {
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          const t = ((e.clientX - rect.left) / rect.width) * durationSec;
+          onScrub(t);
+        }}
+      >
+        <canvas ref={waveformRef} className="absolute inset-0 h-full w-full" />
+        {/* cut lines */}
+        {cutTimes.map((c, i) => (
+          <div key={i} className="absolute inset-y-0 w-px bg-primary/70" style={{ left: `${pct(c)}%` }} />
+        ))}
+        {/* playhead */}
+        <div className="absolute inset-y-0 w-0.5 bg-accent" style={{ left: `${pct(previewTime)}%` }}>
+          <div className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-accent" />
+        </div>
+      </div>
+
+      {/* Transition inspector for selected clip */}
+      {plan && editingIdx !== null && plan.transitions[editingIdx] && (
+        <div className="mx-3 mb-3 rounded-md border border-accent/40 bg-accent/5 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-accent">
+              Cut #{editingIdx + 1} at {cutTimes[editingIdx]?.toFixed(2)}s
+            </div>
+            <button onClick={() => setEditingIdx(null)} className="text-muted-foreground hover:text-foreground">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-[1fr_auto] items-end gap-3">
+            <div>
+              <label className="text-[10px] uppercase tracking-wider text-muted-foreground">Transition</label>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {TRANSITION_TYPES.map((tt) => (
+                  <button
+                    key={tt}
+                    onClick={() => onChangeTransition(editingIdx, { type: tt })}
+                    className={`rounded border px-2 py-1 text-[10px] font-medium transition ${
+                      plan.transitions[editingIdx].type === tt
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-secondary text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                    }`}
+                  >
+                    {tt}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              onClick={() => onChangeTransition(editingIdx, { isHero: !plan.transitions[editingIdx].isHero })}
+              className={`h-8 rounded-md border px-3 text-xs font-bold transition ${
+                plan.transitions[editingIdx].isHero
+                  ? "border-accent bg-accent text-accent-foreground"
+                  : "border-border bg-secondary text-muted-foreground hover:border-accent"
+              }`}
+              title="Mark this as a hero beat (adds subtle pulse)"
+            >
+              ★ Hero
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Small building blocks
+// ============================================================================
 function Panel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-card/40 p-4">
-      <div className="mb-3 flex items-center gap-2">
+    <div className="rounded-xl border border-border/60 bg-card/40 p-3">
+      <div className="mb-2 flex items-center gap-2">
         <span className="text-primary">{icon}</span>
-        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{title}</h3>
+        <h3 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{title}</h3>
       </div>
       {children}
     </div>
@@ -674,10 +949,7 @@ function MediaDropzone({ onFiles }: { onFiles: (files: FileList) => void }) {
   const [drag, setDrag] = useState(false);
   return (
     <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDrag(true);
-      }}
+      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
       onDragLeave={() => setDrag(false)}
       onDrop={(e) => {
         e.preventDefault();
@@ -685,21 +957,14 @@ function MediaDropzone({ onFiles }: { onFiles: (files: FileList) => void }) {
         if (e.dataTransfer.files) onFiles(e.dataTransfer.files);
       }}
       onClick={() => inputRef.current?.click()}
-      className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center transition ${
+      className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-4 text-center transition ${
         drag ? "border-primary bg-primary/10" : "border-border bg-secondary/40 hover:border-primary/50"
       }`}
     >
-      <Upload className="mb-2 h-6 w-6 text-primary" />
-      <p className="text-xs font-medium">Drop photos or clips</p>
-      <p className="text-[10px] text-muted-foreground">or click to browse</p>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        accept="image/*,video/*"
-        className="hidden"
-        onChange={(e) => e.target.files && onFiles(e.target.files)}
-      />
+      <Upload className="mb-1.5 h-5 w-5 text-primary" />
+      <p className="text-[11px] font-medium">Drop photos or clips</p>
+      <p className="text-[9px] text-muted-foreground">or click to browse</p>
+      <input ref={inputRef} type="file" multiple accept="image/*,video/*" className="hidden" onChange={(e) => e.target.files && onFiles(e.target.files)} />
     </div>
   );
 }
@@ -709,142 +974,33 @@ function AudioDropzone({ onFile }: { onFile: (f: File) => void }) {
   return (
     <div
       onClick={() => inputRef.current?.click()}
-      className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-secondary/40 p-6 text-center transition hover:border-primary/50"
+      className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-border bg-secondary/40 p-4 text-center transition hover:border-primary/50"
     >
-      <Music className="mb-2 h-6 w-6 text-primary" />
-      <p className="text-xs font-medium">Drop a song</p>
-      <p className="text-[10px] text-muted-foreground">MP3, WAV, M4A</p>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="audio/*"
-        className="hidden"
-        onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
-      />
+      <Music className="mb-1.5 h-5 w-5 text-primary" />
+      <p className="text-[11px] font-medium">Drop a song</p>
+      <p className="text-[9px] text-muted-foreground">MP3, WAV, M4A</p>
+      <input ref={inputRef} type="file" accept="audio/*" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
     </div>
   );
 }
 
-function SliderRow({
-  label,
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  display,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (n: number) => void;
-  display: string;
-}) {
+function SliderRow({ label, value, min, max, step, onChange, display }: { label: string; value: number; min: number; max: number; step: number; onChange: (n: number) => void; display: string }) {
   return (
-    <div className="mb-3 last:mb-0">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
+    <div className="mb-2 last:mb-0">
+      <div className="flex items-center justify-between text-[10px]">
+        <span className="uppercase tracking-wider text-muted-foreground">{label}</span>
         <span className="font-mono text-primary">{display}</span>
       </div>
-      <Slider
-        value={[value]}
-        min={min}
-        max={max}
-        step={step}
-        onValueChange={(v) => onChange(v[0])}
-        className="mt-1"
-      />
+      <Slider value={[value]} min={min} max={max} step={step} onValueChange={(v) => onChange(v[0])} className="mt-1" />
     </div>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-md bg-secondary py-2">
-      <div className="text-lg font-black text-primary">{value}</div>
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
-    </div>
-  );
-}
-
-const TRANSITION_TYPES = [
-  "cut",
-  "cross-dissolve",
-  "blur-fade",
-  "zoom-punch",
-  "flash-cut",
-  "glitch",
-  "spin",
-] as const;
-const SFX_TYPES = ["none", "whoosh", "impact", "riser"] as const;
-
-function TransitionEditor({
-  plan,
-  beats,
-  onChange,
-}: {
-  plan: EditPlanT;
-  beats: number[];
-  onChange: (next: EditPlanT) => void;
-}) {
-  const update = (i: number, patch: Partial<EditPlanT["transitions"][number]>) => {
-    const next: EditPlanT = {
-      ...plan,
-      transitions: plan.transitions.map((t, idx) => (idx === i ? { ...t, ...patch } : t)),
-    };
-    onChange(next);
-  };
-  return (
-    <div className="mt-2 max-h-72 overflow-y-auto rounded-md border border-border/60 bg-background/40">
-      <div className="sticky top-0 grid grid-cols-[40px_60px_1fr_1fr_40px] items-center gap-2 border-b border-border/60 bg-card/80 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground backdrop-blur">
-        <span>#</span>
-        <span>Beat</span>
-        <span>Transition</span>
-        <span>SFX</span>
-        <span className="text-center">Hero</span>
-      </div>
-      {plan.transitions.map((t, i) => (
-        <div
-          key={i}
-          className="grid grid-cols-[40px_60px_1fr_1fr_40px] items-center gap-2 border-b border-border/40 px-2 py-1.5 text-xs last:border-b-0 hover:bg-secondary/30"
-        >
-          <span className="font-mono text-muted-foreground">{i + 1}</span>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            {beats[i] != null ? `${beats[i].toFixed(2)}s` : "—"}
-          </span>
-          <select
-            value={t.type}
-            onChange={(e) => update(i, { type: e.target.value as EditPlanT["transitions"][number]["type"] })}
-            className={`rounded border border-border bg-secondary px-1.5 py-1 text-[11px] outline-none focus:border-primary ${
-              t.isHero ? "text-accent" : "text-foreground"
-            }`}
-          >
-            {TRANSITION_TYPES.map((tt) => (
-              <option key={tt} value={tt}>{tt}</option>
-            ))}
-          </select>
-          <select
-            value={t.sfx}
-            onChange={(e) => update(i, { sfx: e.target.value as EditPlanT["transitions"][number]["sfx"] })}
-            className="rounded border border-border bg-secondary px-1.5 py-1 text-[11px] outline-none focus:border-primary"
-          >
-            {SFX_TYPES.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-          <button
-            onClick={() => update(i, { isHero: !t.isHero })}
-            className={`mx-auto flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold transition ${
-              t.isHero ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground hover:bg-accent/40"
-            }`}
-            title="Toggle hero beat (adds flash pulse)"
-          >
-            ★
-          </button>
-        </div>
-      ))}
+    <div className="rounded-md bg-secondary py-1.5">
+      <div className="text-base font-black text-primary">{value}</div>
+      <div className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</div>
     </div>
   );
 }

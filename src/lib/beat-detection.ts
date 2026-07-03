@@ -210,6 +210,44 @@ export function findBestWindow(buffer: AudioBuffer, windowSec: number): { start:
   return { start: startSec, end: Math.min(buffer.duration, startSec + windowSec) };
 }
 
+/**
+ * Choose a sparse, musical subset of beats to use as actual cut points.
+ * Every hero beat is included, then high-energy beats fill gaps.
+ * Keeps a minimum gap so cuts breathe (default 1.2s ≈ pro reel pacing).
+ */
+export function selectCutBeats(
+  a: BeatAnalysis,
+  startSec: number,
+  endSec: number,
+  opts: { minGapSec?: number; targetSecPerCut?: number } = {},
+): number[] {
+  const minGap = opts.minGapSec ?? 1.2;
+  const targetSec = opts.targetSecPerCut ?? 1.8;
+  const inRange = (t: number) => t > startSec + 0.15 && t < endSec - 0.15;
+  const dur = Math.max(0.1, endSec - startSec);
+
+  // Score each beat: hero + local energy from curve
+  const scored = a.beats
+    .filter(inRange)
+    .map((t) => {
+      const rel = (t - startSec) / dur;
+      const idx = Math.min(a.energyCurve.length - 1, Math.floor(rel * a.energyCurve.length));
+      const energy = a.energyCurve[idx] ?? 0.5;
+      const isHero = a.heroBeats.includes(t);
+      return { t, score: energy + (isHero ? 1 : 0), isHero };
+    });
+
+  // Greedy pick highest-scoring beats first, honouring minGap
+  const chosen: number[] = [];
+  const targetCount = Math.max(2, Math.round(dur / targetSec));
+  const byScore = [...scored].sort((a, b) => b.score - a.score);
+  for (const b of byScore) {
+    if (chosen.length >= targetCount) break;
+    if (chosen.every((c) => Math.abs(c - b.t) >= minGap)) chosen.push(b.t);
+  }
+  return chosen.sort((x, y) => x - y);
+}
+
 export function drawWaveform(
   canvas: HTMLCanvasElement,
   buffer: AudioBuffer,
