@@ -555,7 +555,7 @@ export function Editor() {
               </Button>
               <Button
                 size="sm"
-                onClick={runDirector}
+                onClick={() => runDirector()}
                 disabled={isDirecting || !audioBuffer || media.length < 2}
                 className="bg-primary text-primary-foreground shadow-lg shadow-primary/30 hover:bg-primary/90"
               >
