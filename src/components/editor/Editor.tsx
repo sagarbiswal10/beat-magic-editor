@@ -95,6 +95,7 @@ export function Editor() {
   const previewSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const previewStartWallRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
+  const chatPanelRef = useRef<HTMLDivElement>(null);
 
   const dims = ASPECT_RATIOS[aspect];
   const directorFn = useServerFn(generateEditPlan);
@@ -247,6 +248,10 @@ export function Editor() {
         );
       }
       toast.success(`AI directed: "${result.styleName}" — ${cuts.length} cuts`, { id: "director" });
+      // Reveal + scroll the AI Director Chat into view once the first plan lands
+      setTimeout(() => {
+        chatPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 250);
     } catch (e) {
       toast.error("Director failed: " + (e as Error).message, { id: "director" });
     } finally {
