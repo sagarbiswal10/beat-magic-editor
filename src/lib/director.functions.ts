@@ -24,6 +24,16 @@ const DirectorInput = z.object({
     cutBeatEnergies: z.array(z.number()).max(64),
     cutBeatTimes: z.array(z.number()).max(64),
   }),
+  userPrompt: z.string().optional(),
+  previousPlan: z
+    .object({
+      styleName: z.string(),
+      colorGrade: z.string(),
+      motionStyle: z.string(),
+      transitions: z.array(z.object({ type: z.string(), isHero: z.boolean() })),
+    })
+    .optional(),
+  mediaKinds: z.array(z.enum(["image", "video"])).optional(),
 });
 
 const EditPlan = z.object({
@@ -69,10 +79,15 @@ export const generateEditPlan = createServerFn({ method: "POST" })
     const transitionCount = Math.max(1, data.audio.cutBeatEnergies.length);
     const a = data.audio;
     const feel = describeFeel(a);
-    const prompt = `You are a world-class music video editor. Every song has a soul — you FEEL it, then cut to it. No two songs get the same edit. Cuts are RARE and DELIBERATE — never every beat.
+    const userInstruction = (data.userPrompt ?? "").trim();
+    const prev = data.previousPlan;
+    const mediaKinds = data.mediaKinds ?? [];
+    const videoCount = mediaKinds.filter((k) => k === "video").length;
+    const prompt = `You are a world-class music video editor cutting a ${data.occasion} reel. Every song has a soul — FEEL it, then cut to it. Every cut must land ON a beat. Cuts should be MUSICAL and DENSE on high-energy sections (drops, choruses), and BREATHE on soft sections.
 
 SONG FINGERPRINT (unique to THIS section): ${a.fingerprint}
-OCCASION: ${data.occasion} | ASPECT: ${data.aspectRatio} | CLIPS: ${data.mediaCount}
+OCCASION: ${data.occasion} | ASPECT: ${data.aspectRatio} | CLIPS: ${data.mediaCount} (${videoCount} video, ${data.mediaCount - videoCount} photo)
+CLIP ORDER (1-indexed, kind): ${mediaKinds.map((k, i) => `#${i + 1}:${k}`).join(", ") || "n/a"}
 
 DEEP SONG ANALYSIS:
 - Section length: ${(a.endSec - a.startSec).toFixed(1)}s at ${a.bpm} BPM (${a.peakDensity.toFixed(2)} beats/sec)
@@ -86,11 +101,13 @@ DEEP SONG ANALYSIS:
 - Hero drops in this window: [${a.heroBeatTimes.map((n) => n.toFixed(2) + "s").join(", ")}]
 
 SONG FEEL (your read): ${feel}
+${prev ? `\nPREVIOUS PLAN (refining, don't restart from scratch):\n- style: ${prev.styleName}\n- grade: ${prev.colorGrade}\n- motion: ${prev.motionStyle}\n- transitions: [${prev.transitions.map((t, i) => `#${i + 1}:${t.type}${t.isHero ? "★" : ""}`).join(", ")}]` : ""}
+${userInstruction ? `\nUSER DIRECTION (HIGHEST PRIORITY — obey exactly, override defaults):\n"""${userInstruction}"""\nParse per-clip instructions carefully. Phrases like "clip 2", "second clip", "the 3rd one" refer to CLIP ORDER above. "Remove all transitions on clip 2" → set that clip's transition to "cut" and isHero:false. "Add more transitions" → keep count as-is (already dense) but favor punchy variety. "Make it cinematic" → dissolves + light-leaks. "Make it hype/party" → pushes + flashes + zoom-punch. If the user contradicts a musical rule, obey the user.\n` : ""}
 
 YOUR JOB — think like a specific editor for THIS song:
 1. Name a real editing style that fits this exact fingerprint (not generic "cinematic cut"). Reference a real aesthetic — Kolder travel drift, Daniels x Turnstile chaos-cut, Emmanuel Lubezki floating dreamscape, K-pop hard-cut, Bollywood wedding montage, A24 handheld, MTV early-2000s, whatever the song demands.
 2. Pick colorGrade + motionStyle that MATCH the brightness and dynamic range (warm/dark songs -> warm-romantic or vintage-film + parallax-drift; bright/punchy -> cinematic-teal or vibrant-party + punch-zoom; ballads -> golden-hour + ken-burns-slow).
-3. Design exactly ${transitionCount} transitions — one per CUT POINT, in order. Available transitions (choose from this set only):
+3. Design exactly ${transitionCount} transitions — one per CUT POINT, in order (transition[i] corresponds to cut #${1} entering clip #2, cut #2 entering clip #3, etc.). Available transitions (choose from this set only):
    - "cut": clean hard cut, invisible pacing (great on quiet moments)
    - "cross-dissolve", "blur-fade": soft, romantic, ballads
    - "morph-zoom", "zoom-punch": punchy hits, drops, choruses
@@ -98,10 +115,10 @@ YOUR JOB — think like a specific editor for THIS song:
    - "push-left", "push-right", "push-up": kinetic energy, K-pop, hip-hop
    - "light-leak", "film-burn": warm nostalgia, weddings, sunsets, film aesthetic
    - "glitch": chaos, distortion, use SPARINGLY (max once every 6 cuts)
-   Rules: pick transitions matching each cut's energy. Vary types — never repeat the same one more than twice in a row. Ballads use mostly dissolves + cuts. Party songs use pushes + zooms + flashes. Weddings use light-leaks + dissolves + film-burns. Mark isHero: true for the biggest 1-3 cuts (drops).
+   Rules: pick transitions matching each cut's energy. Vary types — never repeat the same one more than twice in a row. Ballads use mostly dissolves + cuts. Party songs use pushes + zooms + flashes. Weddings use light-leaks + dissolves + film-burns. Mark isHero:true for the biggest 15-25% cuts (drops). Do NOT set "cut" on high-energy beats unless the user asked for it — use punchy transitions there.
 4. captionHook (<=30 chars) and captionOutro (<=25 chars) that echo the song's mood + occasion — never a generic "WEDDING" or heart emoji unless the song is that literal.
 
-Make this plan DIFFERENT from what you'd give any other song. Use the fingerprint as commitment: two songs with different fingerprints must get different styleName, colorGrade, motionStyle, and transition patterns.`;
+Make this plan DIFFERENT from what you'd give any other song. Use the fingerprint as commitment: two songs with different fingerprints must get different styleName, colorGrade, motionStyle, and transition patterns.${userInstruction ? " USER DIRECTION OVERRIDES everything above where they conflict." : ""}`;
 
     try {
       const { output } = await generateText({

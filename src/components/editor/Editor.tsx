@@ -18,11 +18,15 @@ import {
   Crop,
   Heart,
   Plus,
+  MessageSquare,
+  Send,
+  History,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import {
   analyzeBeats,
   decodeAudioFile,
@@ -79,6 +83,10 @@ export function Editor() {
   const [exportProgress, setExportProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState(0);
+  const [promptInput, setPromptInput] = useState("");
+  const [promptHistory, setPromptHistory] = useState<
+    Array<{ id: string; prompt: string; styleName: string; ts: number }>
+  >([]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveformRef = useRef<HTMLCanvasElement>(null);
@@ -159,28 +167,30 @@ export function Editor() {
     if (!audioBuffer) return null;
     const analysis = analyzeBeats(audioBuffer, audioTrim[0], audioTrim[1]);
     setBeatAnalysis(analysis);
+    const beatSec = 60 / analysis.bpm;
     const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
-      minGapSec: 1.1,
-      targetSecPerCut: Math.max(1.4, durationSec / Math.max(3, media.length)),
+      minGapSec: Math.max(0.35, beatSec * 0.9),
+      targetSecPerCut: Math.max(beatSec, beatSec * (analysis.dynamicRange > 0.5 ? 1.5 : 3)),
     });
     setCutTimesAbs(cuts);
     return { analysis, cuts };
-  }, [audioBuffer, audioTrim, durationSec, media.length]);
+  }, [audioBuffer, audioTrim]);
 
   // ---- AI Director ----
-  const runDirector = useCallback(async () => {
+  const runDirector = useCallback(async (userPrompt?: string) => {
     if (!audioBuffer || media.length < 2) {
       toast.error("Add at least 2 photos/videos and a song first");
       return;
     }
     setIsDirecting(true);
-    toast.loading("Feeling the song + directing your edit...", { id: "director" });
+    toast.loading(userPrompt ? "Applying your direction..." : "Feeling the song + directing your edit...", { id: "director" });
     try {
       const analysis = analyzeBeats(audioBuffer, audioTrim[0], audioTrim[1]);
       setBeatAnalysis(analysis);
+      const beatSec = 60 / analysis.bpm;
       const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
-        minGapSec: 1.1,
-        targetSecPerCut: Math.max(1.4, durationSec / Math.max(3, media.length)),
+        minGapSec: Math.max(0.35, beatSec * 0.9),
+        targetSecPerCut: Math.max(beatSec, beatSec * (analysis.dynamicRange > 0.5 ? 1.5 : 3)),
       });
       setCutTimesAbs(cuts);
 
@@ -198,6 +208,16 @@ export function Editor() {
           occasion,
           aspectRatio: aspect,
           mediaCount: media.length,
+          mediaKinds: media.map((m) => m.kind),
+          userPrompt: userPrompt?.trim() || undefined,
+          previousPlan: plan
+            ? {
+                styleName: plan.styleName,
+                colorGrade: plan.colorGrade,
+                motionStyle: plan.motionStyle,
+                transitions: plan.transitions,
+              }
+            : undefined,
           audio: {
             durationSec,
             bpm: analysis.bpm,
@@ -218,13 +238,21 @@ export function Editor() {
         },
       });
       setPlan(result);
+      if (userPrompt?.trim()) {
+        setPromptHistory((h) =>
+          [
+            { id: Math.random().toString(36).slice(2), prompt: userPrompt.trim(), styleName: result.styleName, ts: Date.now() },
+            ...h,
+          ].slice(0, 20),
+        );
+      }
       toast.success(`AI directed: "${result.styleName}" — ${cuts.length} cuts`, { id: "director" });
     } catch (e) {
       toast.error("Director failed: " + (e as Error).message, { id: "director" });
     } finally {
       setIsDirecting(false);
     }
-  }, [audioBuffer, media.length, audioTrim, occasion, aspect, durationSec, directorFn]);
+  }, [audioBuffer, media, audioTrim, occasion, aspect, durationSec, directorFn, plan]);
 
   // ---- Timeline editing: add/remove cut points, change transitions ----
   const toggleCutAtBeat = useCallback(
@@ -527,7 +555,7 @@ export function Editor() {
               </Button>
               <Button
                 size="sm"
-                onClick={runDirector}
+                onClick={() => runDirector()}
                 disabled={isDirecting || !audioBuffer || media.length < 2}
                 className="bg-primary text-primary-foreground shadow-lg shadow-primary/30 hover:bg-primary/90"
               >
@@ -648,6 +676,93 @@ export function Editor() {
               </div>
             </Panel>
           )}
+
+          <Panel title="AI Director Chat" icon={<MessageSquare className="h-4 w-4" />}>
+            <p className="mb-2 text-[10px] text-muted-foreground">
+              Tell the AI how to edit. Reference clips by number, ask for more/less transitions, or set a vibe.
+            </p>
+            <Textarea
+              value={promptInput}
+              onChange={(e) => setPromptInput(e.target.value)}
+              placeholder={
+                'e.g. "Remove all transitions on clip 2, add more flashes on the drops, make it more cinematic wedding"'
+              }
+              rows={3}
+              className="resize-none bg-secondary text-xs"
+              disabled={isDirecting}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && promptInput.trim()) {
+                  e.preventDefault();
+                  const p = promptInput.trim();
+                  setPromptInput("");
+                  runDirector(p);
+                }
+              }}
+            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-[9px] text-muted-foreground">⌘/Ctrl + Enter to apply</span>
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!promptInput.trim()) return;
+                  const p = promptInput.trim();
+                  setPromptInput("");
+                  runDirector(p);
+                }}
+                disabled={isDirecting || !promptInput.trim() || !audioBuffer || media.length < 2}
+                className="h-7 bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {isDirecting ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <Send className="mr-1 h-3 w-3" />
+                )}
+                Apply
+              </Button>
+            </div>
+            {[
+              "Add more transitions on the drops",
+              "Remove transitions on clip 2",
+              "Make it more cinematic",
+              "Party mode — flashes and pushes",
+            ].map((q) => (
+              <button
+                key={q}
+                onClick={() => setPromptInput(q)}
+                disabled={isDirecting}
+                className="mt-1.5 mr-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-[9px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-40"
+              >
+                {q}
+              </button>
+            ))}
+
+            {promptHistory.length > 0 && (
+              <div className="mt-3 border-t border-border/60 pt-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  <History className="h-3 w-3" />
+                  Prompt history
+                </div>
+                <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                  {promptHistory.map((h) => (
+                    <button
+                      key={h.id}
+                      onClick={() => setPromptInput(h.prompt)}
+                      className="block w-full rounded border border-border/60 bg-secondary/50 p-1.5 text-left text-[10px] transition hover:border-primary/50"
+                    >
+                      <div className="line-clamp-2 text-foreground">{h.prompt}</div>
+                      <div className="mt-0.5 text-[9px] text-primary">→ {h.styleName}</div>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setPromptHistory([])}
+                  className="mt-1.5 text-[9px] text-muted-foreground hover:text-foreground"
+                >
+                  Clear history
+                </button>
+              </div>
+            )}
+          </Panel>
         </section>
       </main>
 
