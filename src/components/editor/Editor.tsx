@@ -676,6 +676,93 @@ export function Editor() {
               </div>
             </Panel>
           )}
+
+          <Panel title="AI Director Chat" icon={<MessageSquare className="h-4 w-4" />}>
+            <p className="mb-2 text-[10px] text-muted-foreground">
+              Tell the AI how to edit. Reference clips by number, ask for more/less transitions, or set a vibe.
+            </p>
+            <Textarea
+              value={promptInput}
+              onChange={(e) => setPromptInput(e.target.value)}
+              placeholder={
+                'e.g. "Remove all transitions on clip 2, add more flashes on the drops, make it more cinematic wedding"'
+              }
+              rows={3}
+              className="resize-none bg-secondary text-xs"
+              disabled={isDirecting}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && promptInput.trim()) {
+                  e.preventDefault();
+                  const p = promptInput.trim();
+                  setPromptInput("");
+                  runDirector(p);
+                }
+              }}
+            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-[9px] text-muted-foreground">⌘/Ctrl + Enter to apply</span>
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!promptInput.trim()) return;
+                  const p = promptInput.trim();
+                  setPromptInput("");
+                  runDirector(p);
+                }}
+                disabled={isDirecting || !promptInput.trim() || !audioBuffer || media.length < 2}
+                className="h-7 bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {isDirecting ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <Send className="mr-1 h-3 w-3" />
+                )}
+                Apply
+              </Button>
+            </div>
+            {[
+              "Add more transitions on the drops",
+              "Remove transitions on clip 2",
+              "Make it more cinematic",
+              "Party mode — flashes and pushes",
+            ].map((q) => (
+              <button
+                key={q}
+                onClick={() => setPromptInput(q)}
+                disabled={isDirecting}
+                className="mt-1.5 mr-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-[9px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground disabled:opacity-40"
+              >
+                {q}
+              </button>
+            ))}
+
+            {promptHistory.length > 0 && (
+              <div className="mt-3 border-t border-border/60 pt-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  <History className="h-3 w-3" />
+                  Prompt history
+                </div>
+                <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                  {promptHistory.map((h) => (
+                    <button
+                      key={h.id}
+                      onClick={() => setPromptInput(h.prompt)}
+                      className="block w-full rounded border border-border/60 bg-secondary/50 p-1.5 text-left text-[10px] transition hover:border-primary/50"
+                    >
+                      <div className="line-clamp-2 text-foreground">{h.prompt}</div>
+                      <div className="mt-0.5 text-[9px] text-primary">→ {h.styleName}</div>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setPromptHistory([])}
+                  className="mt-1.5 text-[9px] text-muted-foreground hover:text-foreground"
+                >
+                  Clear history
+                </button>
+              </div>
+            )}
+          </Panel>
         </section>
       </main>
 
