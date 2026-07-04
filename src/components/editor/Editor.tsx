@@ -167,28 +167,30 @@ export function Editor() {
     if (!audioBuffer) return null;
     const analysis = analyzeBeats(audioBuffer, audioTrim[0], audioTrim[1]);
     setBeatAnalysis(analysis);
+    const beatSec = 60 / analysis.bpm;
     const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
-      minGapSec: 1.1,
-      targetSecPerCut: Math.max(1.4, durationSec / Math.max(3, media.length)),
+      minGapSec: Math.max(0.35, beatSec * 0.9),
+      targetSecPerCut: Math.max(beatSec, beatSec * (analysis.dynamicRange > 0.5 ? 1.5 : 3)),
     });
     setCutTimesAbs(cuts);
     return { analysis, cuts };
-  }, [audioBuffer, audioTrim, durationSec, media.length]);
+  }, [audioBuffer, audioTrim]);
 
   // ---- AI Director ----
-  const runDirector = useCallback(async () => {
+  const runDirector = useCallback(async (userPrompt?: string) => {
     if (!audioBuffer || media.length < 2) {
       toast.error("Add at least 2 photos/videos and a song first");
       return;
     }
     setIsDirecting(true);
-    toast.loading("Feeling the song + directing your edit...", { id: "director" });
+    toast.loading(userPrompt ? "Applying your direction..." : "Feeling the song + directing your edit...", { id: "director" });
     try {
       const analysis = analyzeBeats(audioBuffer, audioTrim[0], audioTrim[1]);
       setBeatAnalysis(analysis);
+      const beatSec = 60 / analysis.bpm;
       const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
-        minGapSec: 1.1,
-        targetSecPerCut: Math.max(1.4, durationSec / Math.max(3, media.length)),
+        minGapSec: Math.max(0.35, beatSec * 0.9),
+        targetSecPerCut: Math.max(beatSec, beatSec * (analysis.dynamicRange > 0.5 ? 1.5 : 3)),
       });
       setCutTimesAbs(cuts);
 
@@ -206,6 +208,16 @@ export function Editor() {
           occasion,
           aspectRatio: aspect,
           mediaCount: media.length,
+          mediaKinds: media.map((m) => m.kind),
+          userPrompt: userPrompt?.trim() || undefined,
+          previousPlan: plan
+            ? {
+                styleName: plan.styleName,
+                colorGrade: plan.colorGrade,
+                motionStyle: plan.motionStyle,
+                transitions: plan.transitions,
+              }
+            : undefined,
           audio: {
             durationSec,
             bpm: analysis.bpm,
@@ -226,13 +238,21 @@ export function Editor() {
         },
       });
       setPlan(result);
+      if (userPrompt?.trim()) {
+        setPromptHistory((h) =>
+          [
+            { id: Math.random().toString(36).slice(2), prompt: userPrompt.trim(), styleName: result.styleName, ts: Date.now() },
+            ...h,
+          ].slice(0, 20),
+        );
+      }
       toast.success(`AI directed: "${result.styleName}" — ${cuts.length} cuts`, { id: "director" });
     } catch (e) {
       toast.error("Director failed: " + (e as Error).message, { id: "director" });
     } finally {
       setIsDirecting(false);
     }
-  }, [audioBuffer, media.length, audioTrim, occasion, aspect, durationSec, directorFn]);
+  }, [audioBuffer, media, audioTrim, occasion, aspect, durationSec, directorFn, plan]);
 
   // ---- Timeline editing: add/remove cut points, change transitions ----
   const toggleCutAtBeat = useCallback(
