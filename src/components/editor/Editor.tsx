@@ -83,6 +83,10 @@ export function Editor() {
   const [exportProgress, setExportProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState(0);
+  const [promptInput, setPromptInput] = useState("");
+  const [promptHistory, setPromptHistory] = useState<
+    Array<{ id: string; prompt: string; styleName: string; ts: number }>
+  >([]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveformRef = useRef<HTMLCanvasElement>(null);
