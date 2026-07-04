@@ -18,11 +18,15 @@ import {
   Crop,
   Heart,
   Plus,
+  MessageSquare,
+  Send,
+  History,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import {
   analyzeBeats,
   decodeAudioFile,
