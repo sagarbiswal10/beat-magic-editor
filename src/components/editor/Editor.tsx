@@ -685,6 +685,24 @@ export function Editor() {
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={undo}
+                disabled={undoStackRef.current.length === 0}
+                title="Undo (Ctrl/Cmd+Z)"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={redo}
+                disabled={redoStackRef.current.length === 0}
+                title="Redo (Ctrl/Cmd+Shift+Z)"
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+              </Button>
               <Button size="sm" onClick={isPlaying ? stopPreview : playPreview} disabled={!plan || !renderCfg} variant="secondary">
                 {isPlaying ? <Pause className="mr-1.5 h-3.5 w-3.5" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
                 {isPlaying ? "Stop" : "Play"}
@@ -702,6 +720,32 @@ export function Editor() {
                 {isExporting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1.5 h-3.5 w-3.5" />}
                 Export {dims.width}×{dims.height}
               </Button>
+            </div>
+
+            <div className="mt-4 rounded-md border border-border/60 bg-secondary/40 p-3">
+              <div className="mb-1.5 flex items-center justify-between text-[10px]">
+                <span className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-muted-foreground">
+                  <Zap className="h-3 w-3 text-primary" />
+                  Transition density
+                </span>
+                <span className="font-mono text-primary">
+                  {density < 0.8 ? "chill" : density < 1.3 ? "balanced" : density < 1.9 ? "energetic" : "rapid-fire"} · {density.toFixed(1)}×
+                </span>
+              </div>
+              <Slider
+                value={[density]}
+                min={0.5}
+                max={2.5}
+                step={0.1}
+                onValueChange={(v) => setDensity(v[0])}
+                onValueCommit={() => {
+                  if (plan) runDirector();
+                  else analyze();
+                }}
+              />
+              <p className="mt-1 text-[9px] text-muted-foreground">
+                Left = fewer, breathing cuts. Right = packed cuts on every hit. Applies on release.
+              </p>
             </div>
 
             {isExporting && (
