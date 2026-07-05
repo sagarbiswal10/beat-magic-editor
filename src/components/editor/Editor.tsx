@@ -684,7 +684,7 @@ export function Editor() {
                 {previewTime.toFixed(1)}s / {durationSec.toFixed(1)}s
               </div>
             </div>
-            <div className="flex justify-center rounded-lg bg-black p-3">
+            <div ref={previewWrapRef} className="group relative flex justify-center rounded-lg bg-black p-3">
               <canvas
                 ref={canvasRef}
                 style={{
@@ -695,6 +695,13 @@ export function Editor() {
                 }}
                 className="rounded shadow-2xl"
               />
+              <button
+                onClick={toggleFullscreen}
+                title="Fullscreen preview"
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md bg-black/70 text-white opacity-0 backdrop-blur transition hover:bg-primary group-hover:opacity-100"
+              >
+                <Maximize2 className="h-4 w-4" />
+              </button>
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
