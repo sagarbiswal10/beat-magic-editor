@@ -24,6 +24,7 @@ import {
   Undo2,
   Redo2,
   Zap,
+  Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -91,6 +92,13 @@ export function Editor() {
     Array<{ id: string; prompt: string; styleName: string; ts: number }>
   >([]);
   const [density, setDensity] = useState(1.4); // 0.5 (chill) .. 2.5 (rapid)
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
 
   // ---- Undo/redo history ----
   type Snapshot = { plan: EditPlanT | null; cutTimesAbs: number[] };
@@ -143,6 +151,7 @@ export function Editor() {
   }, [undo, redo]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const previewWrapRef = useRef<HTMLDivElement>(null);
   const waveformRef = useRef<HTMLCanvasElement>(null);
   const timelineWaveRef = useRef<HTMLCanvasElement>(null);
   const previewCtxRef = useRef<AudioContext | null>(null);
@@ -464,6 +473,17 @@ export function Editor() {
 
   useEffect(() => () => stopPreview(), [stopPreview]);
 
+  const toggleFullscreen = useCallback(async () => {
+    const el = previewWrapRef.current;
+    if (!el) return;
+    try {
+      if (!document.fullscreenElement) await el.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch (e) {
+      toast.error("Fullscreen not available: " + (e as Error).message);
+    }
+  }, []);
+
   // ---- Export ----
   const doExport = useCallback(async () => {
     if (!renderCfg || !audioBuffer || !plan) return;
@@ -671,17 +691,24 @@ export function Editor() {
                 {previewTime.toFixed(1)}s / {durationSec.toFixed(1)}s
               </div>
             </div>
-            <div className="flex justify-center rounded-lg bg-black p-3">
+            <div ref={previewWrapRef} className="group relative flex justify-center rounded-lg bg-black p-3">
               <canvas
                 ref={canvasRef}
                 style={{
                   aspectRatio: `${dims.width}/${dims.height}`,
-                  maxHeight: "52vh",
-                  maxWidth: "100%",
+                  maxHeight: isFullscreen ? "100vh" : "52vh",
+                  maxWidth: isFullscreen ? "100vw" : "100%",
                   background: "#000",
                 }}
                 className="rounded shadow-2xl"
               />
+              <button
+                onClick={toggleFullscreen}
+                title="Fullscreen preview"
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md bg-black/70 text-white opacity-0 backdrop-blur transition hover:bg-primary group-hover:opacity-100"
+              >
+                <Maximize2 className="h-4 w-4" />
+              </button>
             </div>
 
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
