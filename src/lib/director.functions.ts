@@ -62,8 +62,8 @@ const EditPlan = z.object({
     }),
   ),
   motionStyle: z.enum(["ken-burns-slow", "ken-burns-fast", "punch-zoom", "parallax-drift"]),
-  captionHook: z.string(),
-  captionOutro: z.string(),
+  captionHook: z.string().optional().default(""),
+  captionOutro: z.string().optional().default(""),
 });
 
 export type EditPlanT = z.infer<typeof EditPlan>;
