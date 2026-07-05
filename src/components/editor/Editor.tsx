@@ -21,6 +21,9 @@ import {
   MessageSquare,
   Send,
   History,
+  Undo2,
+  Redo2,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -87,6 +90,57 @@ export function Editor() {
   const [promptHistory, setPromptHistory] = useState<
     Array<{ id: string; prompt: string; styleName: string; ts: number }>
   >([]);
+  const [density, setDensity] = useState(1.4); // 0.5 (chill) .. 2.5 (rapid)
+
+  // ---- Undo/redo history ----
+  type Snapshot = { plan: EditPlanT | null; cutTimesAbs: number[] };
+  const undoStackRef = useRef<Snapshot[]>([]);
+  const redoStackRef = useRef<Snapshot[]>([]);
+  const suppressSnapshotRef = useRef(false);
+  const [historyTick, setHistoryTick] = useState(0);
+
+  const snapshot = useCallback((s: Snapshot) => {
+    if (suppressSnapshotRef.current) return;
+    undoStackRef.current.push(s);
+    if (undoStackRef.current.length > 40) undoStackRef.current.shift();
+    redoStackRef.current = [];
+    setHistoryTick((t) => t + 1);
+  }, []);
+
+  const undo = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+    const current: Snapshot = { plan, cutTimesAbs };
+    const prev = undoStackRef.current.pop()!;
+    redoStackRef.current.push(current);
+    suppressSnapshotRef.current = true;
+    setPlan(prev.plan);
+    setCutTimesAbs(prev.cutTimesAbs);
+    setTimeout(() => (suppressSnapshotRef.current = false), 0);
+    setHistoryTick((t) => t + 1);
+  }, [plan, cutTimesAbs]);
+
+  const redo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    const current: Snapshot = { plan, cutTimesAbs };
+    const next = redoStackRef.current.pop()!;
+    undoStackRef.current.push(current);
+    suppressSnapshotRef.current = true;
+    setPlan(next.plan);
+    setCutTimesAbs(next.cutTimesAbs);
+    setTimeout(() => (suppressSnapshotRef.current = false), 0);
+    setHistoryTick((t) => t + 1);
+  }, [plan, cutTimesAbs]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((e.key === "z" && e.shiftKey) || e.key === "y") { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveformRef = useRef<HTMLCanvasElement>(null);
@@ -170,12 +224,12 @@ export function Editor() {
     setBeatAnalysis(analysis);
     const beatSec = 60 / analysis.bpm;
     const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
-      minGapSec: Math.max(0.35, beatSec * 0.9),
-      targetSecPerCut: Math.max(beatSec, beatSec * (analysis.dynamicRange > 0.5 ? 1.5 : 3)),
+      minGapSec: Math.max(0.22, (beatSec * 0.9) / density),
+      targetSecPerCut: Math.max(beatSec * 0.9, (beatSec * (analysis.dynamicRange > 0.5 ? 1.1 : 2)) / density),
     });
     setCutTimesAbs(cuts);
     return { analysis, cuts };
-  }, [audioBuffer, audioTrim]);
+  }, [audioBuffer, audioTrim, density]);
 
   // ---- AI Director ----
   const runDirector = useCallback(async (userPrompt?: string) => {
@@ -190,9 +244,10 @@ export function Editor() {
       setBeatAnalysis(analysis);
       const beatSec = 60 / analysis.bpm;
       const cuts = selectCutBeats(analysis, audioTrim[0], audioTrim[1], {
-        minGapSec: Math.max(0.35, beatSec * 0.9),
-        targetSecPerCut: Math.max(beatSec, beatSec * (analysis.dynamicRange > 0.5 ? 1.5 : 3)),
+        minGapSec: Math.max(0.22, (beatSec * 0.9) / density),
+        targetSecPerCut: Math.max(beatSec * 0.9, (beatSec * (analysis.dynamicRange > 0.5 ? 1.1 : 2)) / density),
       });
+      snapshot({ plan, cutTimesAbs });
       setCutTimesAbs(cuts);
 
       const relHero = analysis.heroBeats
@@ -238,6 +293,9 @@ export function Editor() {
           },
         },
       });
+      // strip any AI-generated captions (user preference: no burned-in text)
+      result.captionHook = "";
+      result.captionOutro = "";
       setPlan(result);
       if (userPrompt?.trim()) {
         setPromptHistory((h) =>
@@ -257,11 +315,12 @@ export function Editor() {
     } finally {
       setIsDirecting(false);
     }
-  }, [audioBuffer, media, audioTrim, occasion, aspect, durationSec, directorFn, plan]);
+  }, [audioBuffer, media, audioTrim, occasion, aspect, durationSec, directorFn, plan, cutTimesAbs, density, snapshot]);
 
   // ---- Timeline editing: add/remove cut points, change transitions ----
   const toggleCutAtBeat = useCallback(
     (beatAbs: number) => {
+      snapshot({ plan, cutTimesAbs });
       setCutTimesAbs((prev) => {
         const exists = prev.some((c) => Math.abs(c - beatAbs) < 0.01);
         const next = exists ? prev.filter((c) => Math.abs(c - beatAbs) >= 0.01) : [...prev, beatAbs].sort((a, b) => a - b);
@@ -276,10 +335,11 @@ export function Editor() {
         return next;
       });
     },
-    [],
+    [plan, cutTimesAbs, snapshot],
   );
 
   const changeTransition = useCallback((i: number, patch: Partial<EditPlanT["transitions"][number]>) => {
+    snapshot({ plan, cutTimesAbs });
     setPlan((p) => {
       if (!p) return p;
       return {
@@ -287,7 +347,7 @@ export function Editor() {
         transitions: p.transitions.map((t, idx) => (idx === i ? { ...t, ...patch } : t)),
       };
     });
-  }, []);
+  }, [plan, cutTimesAbs, snapshot]);
 
   // ---- Build render config ----
   const relCuts = useMemo(
@@ -310,8 +370,7 @@ export function Editor() {
       plan,
       audioStartSec: audioTrim[0],
       totalDurationSec: durationSec,
-      captionHook: plan.captionHook,
-      captionOutro: plan.captionOutro,
+      // captions intentionally omitted — user does not want burned-in text
     };
   }, [plan, media, dims, audioTrim, durationSec, relCuts]);
 
