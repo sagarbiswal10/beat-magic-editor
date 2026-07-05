@@ -164,16 +164,7 @@ export function renderFrame(cfg: RenderConfig, timeSec: number) {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // Captions
-  if (segIdx === 0 && cfg.captionHook) {
-    const fadeIn = Math.min(1, localT * 2);
-    const fadeOut = Math.min(1, (1 - localT) * 3);
-    drawCaption(ctx, W, H, cfg.captionHook, Math.min(fadeIn, fadeOut), "hook");
-  }
-  if (segIdx === bounds.length - 2 && cfg.captionOutro) {
-    const fadeIn = Math.min(1, localT * 3);
-    drawCaption(ctx, W, H, cfg.captionOutro, fadeIn, "outro");
-  }
+  // Captions intentionally disabled — user requested no auto text/emoji.
 }
 
 function applyTransition(
