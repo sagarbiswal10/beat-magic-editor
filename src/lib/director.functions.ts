@@ -62,8 +62,8 @@ const EditPlan = z.object({
     }),
   ),
   motionStyle: z.enum(["ken-burns-slow", "ken-burns-fast", "punch-zoom", "parallax-drift"]),
-  captionHook: z.string(),
-  captionOutro: z.string(),
+  captionHook: z.string().optional().default(""),
+  captionOutro: z.string().optional().default(""),
 });
 
 export type EditPlanT = z.infer<typeof EditPlan>;
@@ -116,7 +116,7 @@ YOUR JOB — think like a specific editor for THIS song:
    - "light-leak", "film-burn": warm nostalgia, weddings, sunsets, film aesthetic
    - "glitch": chaos, distortion, use SPARINGLY (max once every 6 cuts)
    Rules: pick transitions matching each cut's energy. Vary types — never repeat the same one more than twice in a row. Ballads use mostly dissolves + cuts. Party songs use pushes + zooms + flashes. Weddings use light-leaks + dissolves + film-burns. Mark isHero:true for the biggest 15-25% cuts (drops). Do NOT set "cut" on high-energy beats unless the user asked for it — use punchy transitions there.
-4. captionHook (<=30 chars) and captionOutro (<=25 chars) that echo the song's mood + occasion — never a generic "WEDDING" or heart emoji unless the song is that literal.
+4. Do NOT generate on-screen text captions. Leave captionHook and captionOutro as empty strings. The user does not want any auto text/emoji burned into the video.
 
 Make this plan DIFFERENT from what you'd give any other song. Use the fingerprint as commitment: two songs with different fingerprints must get different styleName, colorGrade, motionStyle, and transition patterns.${userInstruction ? " USER DIRECTION OVERRIDES everything above where they conflict." : ""}`;
 
@@ -190,7 +190,7 @@ function fallbackPlan(
     colorGrade: isWedding ? "warm-romantic" : "vibrant-party",
     transitions,
     motionStyle: "ken-burns-fast",
-    captionHook: occasion.toUpperCase(),
-    captionOutro: "❤",
+    captionHook: "",
+    captionOutro: "",
   };
 }
