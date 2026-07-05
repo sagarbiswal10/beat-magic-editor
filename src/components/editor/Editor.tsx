@@ -92,6 +92,13 @@ export function Editor() {
     Array<{ id: string; prompt: string; styleName: string; ts: number }>
   >([]);
   const [density, setDensity] = useState(1.4); // 0.5 (chill) .. 2.5 (rapid)
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
 
   // ---- Undo/redo history ----
   type Snapshot = { plan: EditPlanT | null; cutTimesAbs: number[] };
@@ -689,8 +696,8 @@ export function Editor() {
                 ref={canvasRef}
                 style={{
                   aspectRatio: `${dims.width}/${dims.height}`,
-                  maxHeight: "52vh",
-                  maxWidth: "100%",
+                  maxHeight: isFullscreen ? "100vh" : "52vh",
+                  maxWidth: isFullscreen ? "100vw" : "100%",
                   background: "#000",
                 }}
                 className="rounded shadow-2xl"
