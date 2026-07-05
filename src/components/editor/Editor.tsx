@@ -24,6 +24,7 @@ import {
   Undo2,
   Redo2,
   Zap,
+  Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -143,6 +144,7 @@ export function Editor() {
   }, [undo, redo]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const previewWrapRef = useRef<HTMLDivElement>(null);
   const waveformRef = useRef<HTMLCanvasElement>(null);
   const timelineWaveRef = useRef<HTMLCanvasElement>(null);
   const previewCtxRef = useRef<AudioContext | null>(null);
@@ -463,6 +465,17 @@ export function Editor() {
   }, [renderCfg, audioBuffer, audioTrim, audioVolume, fadeIn, fadeOut, durationSec, media, stopPreview]);
 
   useEffect(() => () => stopPreview(), [stopPreview]);
+
+  const toggleFullscreen = useCallback(async () => {
+    const el = previewWrapRef.current;
+    if (!el) return;
+    try {
+      if (!document.fullscreenElement) await el.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch (e) {
+      toast.error("Fullscreen not available: " + (e as Error).message);
+    }
+  }, []);
 
   // ---- Export ----
   const doExport = useCallback(async () => {
