@@ -17,10 +17,30 @@ export interface BeatAnalysis {
 
 export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
   const arrayBuffer = await file.arrayBuffer();
-  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-  const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-  await ctx.close();
-  return buffer;
+  const Ctor: typeof AudioContext =
+    (window as any).AudioContext || (window as any).webkitAudioContext;
+  if (!Ctor) throw new Error("Web Audio API not supported in this browser");
+  const ctx = new Ctor();
+  try {
+    // Promise-style (modern) with callback fallback for older Safari
+    const buffer: AudioBuffer = await new Promise((resolve, reject) => {
+      let settled = false;
+      const p = (ctx.decodeAudioData as any)(
+        arrayBuffer.slice(0),
+        (b: AudioBuffer) => { if (!settled) { settled = true; resolve(b); } },
+        (e: any) => { if (!settled) { settled = true; reject(e ?? new Error("decodeAudioData failed")); } },
+      );
+      if (p && typeof (p as Promise<AudioBuffer>).then === "function") {
+        (p as Promise<AudioBuffer>).then(
+          (b) => { if (!settled) { settled = true; resolve(b); } },
+          (e) => { if (!settled) { settled = true; reject(e); } },
+        );
+      }
+    });
+    return buffer;
+  } finally {
+    try { await ctx.close(); } catch {}
+  }
 }
 
 export function analyzeBeats(buffer: AudioBuffer, startSec = 0, endSec?: number): BeatAnalysis {
